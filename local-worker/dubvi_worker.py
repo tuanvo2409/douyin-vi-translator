@@ -64,14 +64,11 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         load_dotenv()
-        api_base = os.getenv("DUBVI_API_BASE", "").rstrip("/")
-        token = os.getenv("DUBVI_WORKER_TOKEN", "")
-        media_dir_value = os.getenv("DUBVI_MEDIA_DIR", "")
-        if not api_base or not token or not media_dir_value:
-            raise RuntimeError("Thiếu DUBVI_API_BASE, DUBVI_WORKER_TOKEN hoặc DUBVI_MEDIA_DIR trong file .env")
+        api_base = os.getenv("DUBVI_API_BASE", "http://localhost:8080").rstrip("/")
+        token = os.getenv("DUBVI_WORKER_TOKEN", "standalone_studio_token")
+        media_dir_value = os.getenv("DUBVI_MEDIA_DIR", str(Path.home() / "Videos" / "douyin"))
         media_dir = Path(media_dir_value).expanduser().resolve()
-        if not media_dir.is_dir():
-            raise RuntimeError(f"DUBVI_MEDIA_DIR không tồn tại: {media_dir}")
+        media_dir.mkdir(parents=True, exist_ok=True)
         output_dir = Path(os.getenv("DUBVI_OUTPUT_DIR", str(media_dir / "dubvi-output"))).expanduser().resolve()
         model_dir = Path(os.getenv("DUBVI_MODEL_DIR", str(media_dir / "dubvi-model-cache"))).expanduser().resolve()
         log_dir = Path(os.getenv("DUBVI_LOG_DIR", str(media_dir / "dubvi-logs"))).expanduser().resolve()

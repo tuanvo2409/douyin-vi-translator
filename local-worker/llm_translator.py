@@ -264,9 +264,13 @@ def translate_segments_native(
         except Exception as exc:
             logger.warning(f"Lỗi khi gọi OpenAI API ({exc})...")
 
-    # Báo cáo các câu chưa hoàn tất nếu tất cả key đều cạn
+    # 4. Emergency Fallback: Tự động dịch các câu còn lại qua Google Translate nếu toàn bộ LLM key bị giới hạn 429
     untranslated = [s for s in segments if not s.get("translatedTextVi")]
     if untranslated:
-        logger.warning(f"⚠️ Có {len(untranslated)}/{len(segments)} câu chưa dịch xong. Vui lòng bổ sung thêm Gemini API Key vào .env.")
+        logger.info(f"Đang dùng Fallback Google Translate cho {len(untranslated)}/{len(segments)} câu chưa dịch...")
+        for s in untranslated:
+            src = s.get("sourceTextZh") or s.get("asrTextZh") or ""
+            if src:
+                s["translatedTextVi"] = translate_with_google_free(src)
 
     return segments

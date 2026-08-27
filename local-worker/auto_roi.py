@@ -13,11 +13,29 @@ def get_ocr_instance():
         _OCR_INSTANCE = RapidOCR()
     return _OCR_INSTANCE
 
-def auto_detect_subtitle_roi(video_path: Path, sample_seconds=(2.0, 4.0, 7.0, 12.0, 18.0, 25.0, 35.0)):
+def get_video_duration(video_path: Path) -> float:
+    """Lấy thời lượng video chính xác bằng ffprobe."""
+    try:
+        res = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)
+        ], capture_output=True, text=True)
+        return float(res.stdout.strip())
+    except Exception:
+        return 60.0
+
+def auto_detect_subtitle_roi(video_path: Path, sample_seconds=None):
     """Chỉ dò và che dải phụ đề khớp với giọng nói (Voice Subtitle) ở dải dưới (64%-82%), bỏ qua caption hook ở giữa."""
     ocr = get_ocr_instance()
     candidate_subtitles = []
     tmp_dir = Path(tempfile.gettempdir())
+    
+    dur = get_video_duration(video_path)
+    if sample_seconds is None:
+        # Lấy các mốc phân bổ thông minh theo thời lượng video
+        sample_seconds = [round(dur * pct, 1) for pct in [0.08, 0.18, 0.32, 0.50, 0.70, 0.85] if dur * pct >= 0.5]
+    if not sample_seconds:
+        sample_seconds = [2.0, 4.0, 8.0]
     
     for sec in sample_seconds:
         frame_file = tmp_dir / f"_dubvi_roi_{int(sec*10)}.jpg"
