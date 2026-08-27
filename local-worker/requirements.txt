@@ -1,0 +1,10 @@
+# Runtime media dependencies. Install in a Python 3.11 virtual environment on the user's machine.
+faster-whisper>=1.2.0
+rapidocr-onnxruntime>=1.4.4
+opencv-python-headless>=4.10.0
+edge-tts>=7.0.0
+argostranslate>=1.9.6
+transformers>=4.48.0
+sentencepiece>=0.2.0
+requests>=2.32.0
+python-dotenv>=1.0.1
