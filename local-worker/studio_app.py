@@ -25,8 +25,6 @@ from fastapi import File, UploadFile
 from fastapi.responses import FileResponse
 from nicegui import app, ui
 
-from file_picker import open_windows_file_dialog
-
 # Import local worker modules
 from dubvi_worker import (
     Settings,
