@@ -462,6 +462,23 @@ def hex_to_ass_color(hex_code: str) -> str:
     return "&H00FFFFFF"
 
 
+def wrap_subtitle_text(text: str, max_chars: int = 24) -> str:
+    """Tự động ngắt dòng cân đối tối đa 2 dòng, tránh phụ đề phình to tràn khỏi kính mờ."""
+    words = text.split()
+    if len(text) <= max_chars or len(words) <= 3:
+        return text
+    best_split = len(words) // 2
+    best_diff = 999
+    for i in range(1, len(words)):
+        l1 = " ".join(words[:i])
+        l2 = " ".join(words[i:])
+        diff = abs(len(l1) - len(l2))
+        if diff < best_diff:
+            best_diff = diff
+            best_split = i
+    return " ".join(words[:best_split]) + r"\N" + " ".join(words[best_split:])
+
+
 def draw_ass(
     segments: list[dict[str, Any]],
     video_width: int,
@@ -470,29 +487,49 @@ def draw_ass(
     path: Path,
     font_name: str = "Arial",
     font_size: int | None = None,
-    font_color: str = "#FFFFFF"
+    font_color: str = "#FFFF00"
 ) -> None:
-    # Tùy biến kích cỡ chữ hoặc mặc định 56px (~0.029 chiều cao)
-    actual_font_size = font_size if font_size else max(32, int(video_height * 0.029))
+    """Vẽ phụ đề ASS chuẩn 1080p, căn giữa hoàn hảo bên trong Kính Mờ (không bao giờ tràn ra ngoài)."""
+    # Luôn chuẩn hóa theo độ phân giải xuất 1080p (1080x1920 hoặc 1920x1080)
+    if video_height >= video_width:
+        target_w, target_h = 1080, 1920
+    else:
+        target_w, target_h = 1920, 1080
+
+    actual_font_size = font_size if font_size else 44
     ass_color = hex_to_ass_color(font_color)
-    center_y = int(video_height * (roi["yPercent"] + roi["heightPercent"] / 2.0) / 100)
-    margin_v = max(10, int(video_height - center_y - int(actual_font_size * 0.5)))
+    center_y = int(target_h * (roi.get("yPercent", 65.0) + roi.get("heightPercent", 14.0) / 2.0) / 100)
+
     lines = [
-        "[Script Info]", "ScriptType: v4.00+", "PlayResX: %d" % video_width, "PlayResY: %d" % video_height,
+        "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {target_w}", f"PlayResY: {target_h}",
         "[V4+ Styles]", "Format: Name,Fontname,Fontsize,PrimaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
-        f"Style: Vietnamese,{font_name},{actual_font_size},{ass_color},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3.2,1.6,2,36,36,{margin_v},1",
+        f"Style: Vietnamese,{font_name},{actual_font_size},{ass_color},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3.2,1.2,2,40,40,10,1",
         "[Events]", "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
     ]
+
     for segment in segments:
         start = int(segment["startMs"])
         end = int(segment["endMs"])
+
         def ass_time(value: int) -> str:
             hours, remainder = divmod(value, 3_600_000)
             minutes, remainder = divmod(remainder, 60_000)
             seconds, milliseconds = divmod(remainder, 1000)
             return f"{hours}:{minutes:02d}:{seconds:02d}.{milliseconds // 10:02d}"
-        text = (segment.get("translatedTextVi") or "").replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
-        lines.append(f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Vietnamese,,0,0,0,,{text}")
+
+        raw_text = segment.get("translatedTextVi") or ""
+        wrapped_text = wrap_subtitle_text(raw_text, max_chars=24)
+        is_multiline = r"\N" in wrapped_text
+
+        # Căn chỉnh MarginV từng dòng để tâm chữ luôn khớp chính xác vào tâm Kính Mờ
+        if is_multiline:
+            line_margin_v = max(10, int(target_h - center_y - actual_font_size * 0.95))
+        else:
+            line_margin_v = max(10, int(target_h - center_y - actual_font_size * 0.45))
+
+        clean_text = wrapped_text.replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
+        lines.append(f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Vietnamese,,0,0,{line_margin_v},,{clean_text}")
+
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
