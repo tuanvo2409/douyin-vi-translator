@@ -75,15 +75,15 @@ def auto_detect_subtitle_roi(video_path: Path, sample_seconds=None):
                 })
 
     if not candidate_subtitles:
-        return {"xPercent": 2.0, "yPercent": 66.0, "widthPercent": 96.0, "heightPercent": 10.5, "blurPx": 24}
+        return {"xPercent": 2.0, "yPercent": 64.5, "widthPercent": 96.0, "heightPercent": 14.0, "blurPx": 24}
 
     min_y = min(c["ymin_pct"] for c in candidate_subtitles)
     max_y = max(c["ymax_pct"] for c in candidate_subtitles)
 
-    # Khoảng đệm thở 2% trên và dưới để che trọn vẹn 100% dải phụ đề
-    final_ymin_pct = max(63.0, round(min_y - 1.2, 1))
-    final_ymax_pct = min(85.0, round(max_y + 2.8, 1))
-    h_pct = max(11.0, min(round(final_ymax_pct - final_ymin_pct, 1), 14.0))
+    # Khoảng đệm thở rộng trên và dưới để che phủ 100% mọi chân chữ, dấu câu và emoji
+    final_ymin_pct = max(62.5, round(min_y - 2.0, 1))
+    final_ymax_pct = min(86.0, round(max_y + 4.5, 1))
+    h_pct = max(13.8, min(round(final_ymax_pct - final_ymin_pct, 1), 16.0))
 
     return {
         "xPercent": 2.0,
