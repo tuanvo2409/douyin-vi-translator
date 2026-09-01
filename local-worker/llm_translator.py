@@ -45,7 +45,7 @@ PAGE_PERSONAS: Dict[str, Dict[str, Any]] = {
 }
 
 
-def build_system_prompt(channel_profile: Optional[str] = None, cta_prompt: Optional[str] = None) -> str:
+def build_system_prompt(channel_profile: Optional[str] = None) -> str:
     persona_key = "page_giai_cuu_chuong_lon"
     if channel_profile:
         cleaned = channel_profile.lower().replace(" ", "_").replace("-", "_")
@@ -55,14 +55,6 @@ def build_system_prompt(channel_profile: Optional[str] = None, cta_prompt: Optio
             persona_key = "page_giai_cuu_chuong_lon"
             
     persona_info = PAGE_PERSONAS[persona_key]
-    
-    cta_section = ""
-    if cta_prompt:
-        cta_section = f"""
-🔥 ĐẶC BIỆT - CÂU KẾT CHỐT ĐƠN (CALL-TO-ACTION):
-- Câu kết thúc (câu cuối cùng): {cta_prompt}
-- Viết tự nhiên, không lộ liễu, gắn liền với lợi ích cụ thể người xem nhận được.
-"""
 
     return f"""Bạn là chuyên gia chuyển ngữ (Transcreation Specialist) và Top Content Creator triệu view trên TikTok/Reels Việt Nam.
 Nhiệm vụ của bạn là chuyển thể toàn bộ kịch bản video Douyin (Trung Quốc) sang tiếng Việt theo phong cách STORYTELLING, TẤU HÀI, KỂ KHỔ, XÉO XẮT và BẮT TREND người Việt.
@@ -79,7 +71,7 @@ Nhiệm vụ của bạn là chuyển thể toàn bộ kịch bản video Douyin
   + Cảnh báo ngược: Kích thích tò mò bằng cách cảnh báo/cấm đoán.
 - Tích cực sử dụng bộ POWER WORDS: chân ái, cứu tinh, đỉnh chóp, nghiện luôn, hack diện tích, bơi hết vào đây, chốt đơn, tiếc hùi hụi, 3 nốt nhạc.
 - Luôn đảm bảo số từ của câu mở đầu KHÔNG ĐƯỢC VƯỢT QUÁ `max_words` của slot đầu tiên!
-{cta_section}
+
 ⛔ BỘ QUY TẮC "DIỆT SẠCH AI SLOP" (NEGATIVE PROMPTING BẮT BUỘC):
 1. TUYỆT ĐỐI CẤM mọi kiểu mở đầu sáo rỗng: "Xin chào mọi người", "Chào mừng các bạn", "Hôm nay mình...", "Trong video hôm nay...", "Bạn có bao giờ tự hỏi...".
 2. TUYỆT ĐỐI CẤM các từ hoa mỹ vô nghĩa (AI Clichés): "hành trình", "chìa khóa", "bức tranh lớn", "mở khóa tiềm năng", "thay đổi cuộc đời", "bạn sẽ không tin", "game changer", "bí quyết thành công".
@@ -127,44 +119,12 @@ def translate_with_google_free(text: str) -> str:
     return text
 
 
-CTA_TEMPLATES: Dict[str, Dict[str, Any]] = {
-    "tiktok_shop": {
-        "name": "🛍️ TikTok Shop / Giỏ hàng",
-        "prompt": "Kêu gọi người xem bấm vào giỏ hàng góc trái màn hình hoặc bio để xem món đồ chân ái giá hời.",
-        "examples": [
-            "Link món đồ chân ái này tui ghim ở giỏ hàng góc trái nha!",
-            "Mấy bà bấm giỏ hàng góc trái rinh ngay em này về nhé!",
-            "Kệ đa năng này tui để link ở giỏ hàng góc trái nha cả nhà!"
-        ]
-    },
-    "fanpage_inbox": {
-        "name": "📩 Fanpage / Inbox nhận link",
-        "prompt": "Kêu gọi người xem nhắn tin hoặc inbox trực tiếp cho page để nhận link mua đồ và mẹo cải tạo phòng trọ.",
-        "examples": [
-            "Bác nào muốn cứu cái phòng trọ thì inbox tui chỉ chỗ mua nhé!",
-            "Cần link món nào nhắn tin cho tui chỉ chỗ mua giá hời nha!",
-            "Bác nào chưa biết mua ở đâu thì nhắn tin tui gửi link nhé!"
-        ]
-    },
-    "follow_retention": {
-        "name": "❤️ Thả tim & Follow kênh",
-        "prompt": "Kêu gọi người xem follow kênh để đón xem tập tiếp theo và cập nhật thêm mẹo sinh tồn phòng trọ.",
-        "examples": [
-            "Follow kênh để không bỏ lỡ mẹo dọn phòng trọ tiếp theo nhé!",
-            "Thấy hay thì thả tim và follow kênh của tui nha!",
-            "Bấm theo dõi để đón xem tập dọn phòng tiếp theo nha!"
-        ]
-    }
-}
-
-
 def translate_with_gemini_single_chunk(
     chunk_segs: List[Dict[str, Any]],
     chunk_offset: int,
     api_key: str,
     model: str = "gemini-flash-lite-latest",
-    channel_profile: Optional[str] = None,
-    cta_type: Optional[str] = None
+    channel_profile: Optional[str] = None
 ) -> Dict[int, str]:
     """Dịch 1 nhóm câu thoại qua Google Gemini REST API v1beta."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
@@ -180,8 +140,7 @@ def translate_with_gemini_single_chunk(
             "chinese_text": source_text
         })
         
-    cta_prompt = CTA_TEMPLATES.get(cta_type, {}).get("prompt") if cta_type else None
-    sys_prompt = build_system_prompt(channel_profile=channel_profile, cta_prompt=cta_prompt)
+    sys_prompt = build_system_prompt(channel_profile=channel_profile)
         
     prompt = (
         f"{sys_prompt}\n\n"
@@ -220,8 +179,7 @@ def translate_with_gemini(
     segments: List[Dict[str, Any]],
     api_key: Optional[str] = None,
     model: str = "gemini-flash-lite-latest",
-    channel_profile: Optional[str] = None,
-    cta_type: Optional[str] = None
+    channel_profile: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """Dịch các đoạn thoại bằng Google Gemini với khả năng xoay tua key thông minh."""
     models_to_try = [model, "gemini-flash-lite-latest", "gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash"]
@@ -244,7 +202,7 @@ def translate_with_gemini(
                 try:
                     trans_map = translate_with_gemini_single_chunk(
                         chunk_segs, chunk_start, active_key,
-                        model=m, channel_profile=channel_profile, cta_type=cta_type
+                        model=m, channel_profile=channel_profile
                     )
                     if trans_map:
                         success = True
@@ -326,8 +284,7 @@ def translate_segments_native(
     gemini_key: Optional[str] = None,
     deepseek_key: Optional[str] = None,
     openai_key: Optional[str] = None,
-    channel_profile: Optional[str] = None,
-    cta_type: Optional[str] = None
+    channel_profile: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """Điểm vào chính: Chuyển ngữ bản xứ bằng LLM với cơ chế xoay tua Gemini Key Pool 100% khi gặp 429."""
     if not segments:
@@ -340,8 +297,7 @@ def translate_segments_native(
             segments = translate_with_gemini(
                 segments, gemini_key,
                 model="gemini-flash-lite-latest",
-                channel_profile=channel_profile,
-                cta_type=cta_type
+                channel_profile=channel_profile
             )
         except Exception as exc:
             logger.warning(f"Lỗi khi gọi Gemini API ({exc})...")

@@ -40,7 +40,7 @@ from dubvi_worker import (
     CHANNEL_DEFAULTS,
 )
 from auto_roi import auto_detect_subtitle_roi, scan_silent_subtitles, merge_asr_and_ocr_segments
-from llm_translator import translate_segments_native, generate_viral_hooks, CTA_TEMPLATES, PAGE_PERSONAS
+from llm_translator import translate_segments_native, generate_viral_hooks, PAGE_PERSONAS
 from gemini_pool import gemini_pool
 
 # Cấu hình môi trường
@@ -90,7 +90,6 @@ state = {
     "hooks": [],
     "logs": ["🟢 Hệ thống Dubvi Studio v5.0 (Stage 2 Ingest) sẵn sàng."],
     "channel_filter": "all",
-    "selected_cta_type": "tiktok_shop",
     "video_metadata_map": {},
 }
 
@@ -110,13 +109,6 @@ COLOR_OPTIONS = {
     "#00FF7F": "🟢 Xanh Lá Sáng",
     "#FF69B4": "🌸 Hồng Pastel",
     "#FFA500": "🟠 Cam Năng Động",
-}
-
-CTA_OPTIONS = {
-    "tiktok_shop": "🛍️ TikTok Shop / Giỏ hàng góc trái (Mặc định)",
-    "fanpage_inbox": "📩 Fanpage / Inbox nhận link",
-    "follow_retention": "❤️ Thả tim & Follow kênh",
-    "none": "❌ Tắt CTA (Không chèn)"
 }
 
 CHANNEL_FILTER_OPTIONS = {
@@ -220,17 +212,7 @@ def main_page():
 
                     selected_file_label = ui.label("🎬 Chưa chọn video").classes("text-[11px] text-indigo-300 font-bold truncate w-full px-1")
 
-                # CARD 2: CHIẾN LƯỢC KỊCH BẢN & CTA CHỐT ĐƠN (CONVERSION)
-                with ui.column().classes("w-full bg-slate-800/40 p-2.5 rounded-xl border border-slate-800/80 gap-2"):
-                    ui.label("🎯 CTA CHỐT ĐƠN CUỐI CLIP").classes("text-[11px] font-extrabold tracking-wider text-amber-400 uppercase")
-                    cta_select = ui.select(
-                        options=CTA_OPTIONS,
-                        value=state["selected_cta_type"],
-                        label="Kêu gọi hành động (CTA)",
-                        on_change=lambda e: update_cta(e.value)
-                    ).classes("w-full bg-slate-900/60 rounded-lg text-xs").props("dense options-dense")
-
-                # CARD 3: GIỌNG ĐỌC CAPCUT VIRAL
+                # CARD 2: GIỌNG ĐỌC CAPCUT VIRAL
                 with ui.column().classes("w-full bg-slate-800/40 p-2.5 rounded-xl border border-slate-800/80 gap-1"):
                     ui.label("🎙️ GIỌNG ĐỌC CAPCUT (VIRAL VOICE)").classes("text-[11px] font-extrabold tracking-wider text-indigo-400 uppercase")
                     voice_select = ui.select(
@@ -241,7 +223,7 @@ def main_page():
                     ).classes("w-full bg-slate-900/60 rounded-lg text-xs").props("dense options-dense")
                     sample_audio_player = ui.audio("").classes("hidden")
 
-                # CARD 4: CÀI ĐẶT & XEM TRƯỚC PHỤ ĐỀ SAFE ZONE
+                # CARD 3: CÀI ĐẶT & XEM TRƯỚC PHỤ ĐỀ SAFE ZONE
                 with ui.column().classes("w-full bg-slate-800/40 p-2.5 rounded-xl border border-slate-800/80 gap-2"):
                     with ui.row().classes("w-full items-center justify-between"):
                         ui.label("🔤 PHỤ ĐỀ SAFE ZONE 22%").classes("text-[11px] font-extrabold tracking-wider text-indigo-400 uppercase")
@@ -405,10 +387,23 @@ def main_page():
         except Exception:
             pass
 
+    def on_channel_filter_changed(filter_val: str):
+        state["channel_filter"] = filter_val
+        push_log(f"📂 Đã chọn bộ lọc kênh: {CHANNEL_FILTER_OPTIONS.get(filter_val, filter_val)}")
+        refresh_video_list()
+
     def refresh_video_list():
-        vids = scan_raw_videos()
-        opt = {v["path"]: f"{v['name']} ({v['size']})" for v in vids}
-        video_select.set_options(opt)
+        vids = scan_raw_videos(channel_filter=state["channel_filter"])
+        opts = {v["path"]: v["name"] for v in vids}
+        video_select.set_options(opts)
+        if opts and (not state["selected_video"] or str(state["selected_video"].resolve()) not in opts):
+            first_path = list(opts.keys())[0]
+            video_select.set_value(first_path)
+            asyncio.create_task(select_video(first_path))
+        elif not opts:
+            video_select.set_options({})
+            video_select.set_value(None)
+        push_log(f"🔄 Đã quét lại danh sách ({state['channel_filter']}): {len(vids)} video.")
 
     def get_http_video_url(p: Path) -> str:
         if not p or not p.is_file():
@@ -933,11 +928,10 @@ def main_page():
         
         meta_info = state["video_metadata_map"].get(str(source.resolve())) or {}
         channel_prof = meta_info.get("channel_profile")
-        cta_opt = state.get("selected_cta_type") if state.get("selected_cta_type") != "none" else None
         
-        push_log(f"🧠 Đang gọi Google Gemini 2.5 Flash chuyển ngữ (Kênh: {meta_info.get('channel_name', 'Đa Kênh')}, CTA: {state.get('selected_cta_type')})...")
+        push_log(f"🧠 Đang gọi Google Gemini 2.5 Flash chuyển ngữ (Kênh: {meta_info.get('channel_name', 'Đa Kênh')})...")
         segs = await loop.run_in_executor(
-            None, translate_segments_native, segs, "gemini", None, None, None, channel_prof, cta_opt
+            None, translate_segments_native, segs, "gemini", None, None, None, channel_prof
         )
         state["segments"] = segs
         try:
