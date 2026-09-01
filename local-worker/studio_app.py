@@ -37,7 +37,7 @@ from dubvi_worker import (
     synthesize,
     transcribe,
 )
-from auto_roi import auto_detect_subtitle_roi
+from auto_roi import auto_detect_subtitle_roi, scan_silent_subtitles, merge_asr_and_ocr_segments
 from llm_translator import translate_segments_native, generate_viral_hooks
 from gemini_pool import gemini_pool
 
@@ -804,8 +804,35 @@ def main_page():
         
         push_log("🗣️ Đang chạy Whisper ASR nhận diện tiếng Trung...")
         loop = asyncio.get_event_loop()
-        segs = await loop.run_in_executor(None, transcribe, audio_wav, "tiny", "cpu")
-        push_log(f"✓ Whisper phát hiện {len(segs)} câu thoại.")
+        asr_segs = await loop.run_in_executor(None, transcribe, audio_wav, "tiny", "cpu")
+        push_log(f"✓ Whisper phát hiện {len(asr_segs)} câu thoại có tiếng nói.")
+
+        # Dò tìm các đoạn phụ đề câm trên màn hình (RapidOCR Scanner)
+        push_log("🔍 Đang quét RapidOCR dò tìm Sub Câm và Icon/Nhãn...")
+        roi = state.get("roi") or {"xPercent": 2.0, "yPercent": 66.0, "widthPercent": 96.0, "heightPercent": 9.8}
+        try:
+            silent_segs, mask_only = await loop.run_in_executor(
+                None, scan_silent_subtitles, source, roi, asr_segs, 1.4, 3
+            )
+            state["mask_only_intervals"] = mask_only
+            if silent_segs:
+                push_log(f"✓ Phát hiện {len(silent_segs)} đoạn Sub Câm có nghĩa (>=3 chữ) để lồng tiếng!")
+            if mask_only:
+                push_log(f"✓ Ghi nhận {len(mask_only)} đoạn Sub ngắn/Icon (<3 chữ) để chỉ bật Kính Mờ.")
+        except Exception as exc:
+            silent_segs, mask_only = [], []
+            state["mask_only_intervals"] = []
+            push_log(f"⚠️ Lỗi quét Sub câm ({exc}), tiếp tục với thoại ASR.")
+
+        # Hợp nhất thoại nói + sub câm theo trình tự thời gian
+        for s in asr_segs:
+            s["sourceTextZh"] = s.get("asrTextZh", "")
+            s["subType"] = "🎙️ Thoại"
+        for s in silent_segs:
+            s["subType"] = "📺 Sub Câm"
+
+        segs = merge_asr_and_ocr_segments(asr_segs, silent_segs)
+        push_log(f"📊 Tổng kịch bản: {len(segs)} câu ({len(asr_segs)} thoại + {len(silent_segs)} sub câm).")
 
         # Tự động tách BGM bằng Demucs AI nếu chưa có
         clean_bgm_wav = job_dir / "clean_bgm.wav"
@@ -831,8 +858,6 @@ def main_page():
         progress_bar.set_value(0.4)
         current_step_label.set_text("2/4: Gemini 2.5 Flash chuyển ngữ bản xứ...")
         push_log("🧠 Đang gọi Google Gemini 2.5 Flash chuyển ngữ kịch bản...")
-        for s in segs:
-            s["sourceTextZh"] = s.get("asrTextZh", "")
         segs = await loop.run_in_executor(
             None, translate_segments_native, segs, "gemini"
         )
@@ -848,9 +873,10 @@ def main_page():
         for s in segs:
             st = s["startMs"] / 1000
             et = s["endMs"] / 1000
+            tag = s.get("subType", "🎙️ Thoại")
             row_data.append({
                 "position": s["position"],
-                "timeline": f"{st:04.1f}s → {et:04.1f}s",
+                "timeline": f"[{tag}] {st:04.1f}s → {et:04.1f}s",
                 "sourceTextZh": s.get("sourceTextZh", ""),
                 "translatedTextVi": s.get("translatedTextVi", ""),
             })
@@ -957,9 +983,10 @@ def main_page():
             if len(ass_posix) >= 2 and ass_posix[1] == ":":
                 ass_posix = ass_posix[0] + "\\:" + ass_posix[2:]
 
-            # Gom các câu thoại liên tục thành các khối thời gian cố định (loại bỏ nhấp nháy, chỉ tắt khi nghỉ >= 1.8s)
-            if state["segments"]:
-                blocks = compute_mask_intervals(state["segments"], max_gap_s=1.8, padding_s=0.15)
+            # Gom các câu thoại và các đoạn sub câm/ngắn thành các khối thời gian hiển thị Mask cố định
+            mask_only = state.get("mask_only_intervals", [])
+            if state["segments"] or mask_only:
+                blocks = compute_mask_intervals(state["segments"] or [], mask_only_intervals=mask_only, max_gap_s=1.8, padding_s=0.15)
                 active_intervals = [f"between(t,{st},{et})" for st, et in blocks]
             else:
                 active_intervals = []

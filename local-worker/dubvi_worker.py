@@ -516,21 +516,27 @@ def ffprobe_dimensions(source: Path) -> tuple[int, int]:
 
 def compute_mask_intervals(
     segments: list[dict[str, Any]],
+    mask_only_intervals: list[tuple[float, float]] | None = None,
     max_gap_s: float = 1.8,
     padding_s: float = 0.15
 ) -> list[tuple[float, float]]:
     """
-    Gom các câu thoại liên tục thành các khối thời gian cố định,
-    loại bỏ hoàn toàn hiện tượng nhấp nháy (flickering).
-    Chỉ tắt mask khi khoảng cách giữa 2 câu thực sự dài (>= 1.8s).
+    Gom các câu thoại và các đoạn sub câm/ngắn thành các khối thời gian hiển thị Mask cố định.
+    Chỉ tắt mask khi hoàn toàn không có sub hoặc khoảng cách giữa 2 sub thực sự dài (>= 1.8s).
     """
     raw_intervals = []
-    for seg in segments:
-        has_text = bool((seg.get("sourceTextZh") or seg.get("ocrTextZh") or seg.get("asrTextZh") or "").strip()) or bool(seg.get("translatedTextVi", "").strip())
-        if has_text and seg.get("endMs", 0) > seg.get("startMs", 0):
-            st = max(0.0, seg["startMs"] / 1000.0)
-            et = max(st, seg["endMs"] / 1000.0)
-            raw_intervals.append((st, et))
+    if segments:
+        for seg in segments:
+            has_text = bool((seg.get("sourceTextZh") or seg.get("ocrTextZh") or seg.get("asrTextZh") or "").strip()) or bool(seg.get("translatedTextVi", "").strip())
+            if has_text and seg.get("endMs", 0) > seg.get("startMs", 0):
+                st = max(0.0, seg["startMs"] / 1000.0)
+                et = max(st, seg["endMs"] / 1000.0)
+                raw_intervals.append((st, et))
+
+    if mask_only_intervals:
+        for st, et in mask_only_intervals:
+            if et > st:
+                raw_intervals.append((max(0.0, float(st)), float(et)))
 
     if not raw_intervals:
         return []
@@ -558,7 +564,8 @@ def render_video(
     roi: dict[str, Any],
     audio_mode: str,
     clean_bgm_path: Path | None = None,
-    segments: list[dict[str, Any]] | None = None
+    segments: list[dict[str, Any]] | None = None,
+    mask_only_intervals: list[tuple[float, float]] | None = None
 ) -> None:
     orig_w, orig_h = ffprobe_dimensions(source)
     
@@ -581,8 +588,8 @@ def render_video(
         ass_posix = ass_posix[0] + "\\:" + ass_posix[2:]
 
     # Tính toán các khối mask cố định liên tục (loại bỏ nhấp nháy, chỉ tắt khi nghỉ >= 1.8s)
-    if segments:
-        blocks = compute_mask_intervals(segments, max_gap_s=1.8, padding_s=0.15)
+    if segments or mask_only_intervals:
+        blocks = compute_mask_intervals(segments or [], mask_only_intervals=mask_only_intervals, max_gap_s=1.8, padding_s=0.15)
         active_intervals = [f"between(t,{st},{et})" for st, et in blocks]
     else:
         active_intervals = []
