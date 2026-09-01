@@ -442,3 +442,73 @@ YÊU CẦU BẮT BUỘC:
         {"type": "pattern_interrupt", "label": "🤯 Phá Chuẩn", "text": "Tủ sắt mini mà đựng được cả thế giới!"},
         {"type": "warning", "label": "🚨 Cảnh Báo", "text": "Đừng mua tủ này nếu sợ quá nghiện nha!"}
     ]
+
+
+def generate_social_post_caption(
+    segments: List[Dict[str, Any]],
+    channel_profile: Optional[str] = None,
+    api_key: Optional[str] = None
+) -> Dict[str, Any]:
+    """Sinh tiêu đề giật tít, nội dung caption và 5-7 hashtags chuẩn SEO đăng TikTok/Reels/Shorts."""
+    context_lines = []
+    for s in segments[:8]:
+        t = s.get("translatedTextVi") or s.get("sourceTextZh") or ""
+        if t:
+            context_lines.append(t)
+    context_text = " ".join(context_lines)
+    
+    persona_key = "page_giai_cuu_chuong_lon"
+    default_tags = ["#giaicuuchuonglon", "#reviewgiadung", "#decorphongtro", "#meodondep", "#giadungthongminh", "#fyp", "#xuhuong"]
+    if channel_profile:
+        cleaned = channel_profile.lower().replace(" ", "_").replace("-", "_")
+        if "goc_tro" in cleaned or "bat_on" in cleaned:
+            persona_key = "page_goc_tro_bat_on"
+            default_tags = ["#goctrobaton", "#dramasinhtro", "#dramaktx", "#bancungphong", "#chutro", "#sinhvien", "#xuhuong"]
+
+    prompt = f"""Bạn là chuyên gia sáng tạo Caption & Hashtag triệu view trên TikTok/Reels cho kênh: {PAGE_PERSONAS[persona_key]['name']}.
+Dựa trên nội dung kịch bản video sau:
+\"\"\"{context_text}\"\"\"
+
+Hãy tạo ra:
+1. "title": Tiêu đề giật tít thu hút (dưới 15 từ, có icon sinh động, đánh trúng tò mò).
+2. "body": Đoạn caption ngắn 1-2 câu kể lể/kêu gọi thảo luận bình luận (VD: "Ai cùng cảnh ngộ điểm danh coi?").
+3. "hashtags": Danh sách đúng 6-8 hashtags chuẩn SEO theo chủ đề kênh.
+4. "full_post": Ghép hoàn chỉnh title + body + hashtags thành 1 đoạn văn bản sẵn sàng copy đăng bài.
+
+ĐẦU RA BẮT BUỘC (JSON thuần túy):
+{{
+  "title": "...",
+  "body": "...",
+  "hashtags": ["#tag1", "#tag2", ...],
+  "full_post": "..."
+}}
+"""
+    key = gemini_pool.get_key() or api_key or os.getenv("GEMINI_API_KEY")
+    if key:
+        for model_name in ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.0-flash"]:
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
+                payload = {
+                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                    "generationConfig": {"responseMimeType": "application/json", "temperature": 0.6}
+                }
+                resp = requests.post(url, json=payload, timeout=20)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    parsed = json.loads(raw_text)
+                    if parsed.get("title") and parsed.get("full_post"):
+                        return parsed
+            except Exception:
+                continue
+
+    # Fallback
+    first_sentence = context_lines[0] if context_lines else "Cải tạo góc nhỏ siêu mê!"
+    tags_str = " ".join(default_tags)
+    full_fallback = f"🔥 {first_sentence}\n\nMấy bà thấy món này thế nào? Cùng chia sẻ ở dưới nha!\n\n{tags_str}"
+    return {
+        "title": f"🔥 {first_sentence}",
+        "body": "Mấy bà thấy món này thế nào? Cùng chia sẻ ở dưới nha!",
+        "hashtags": default_tags,
+        "full_post": full_fallback
+    }

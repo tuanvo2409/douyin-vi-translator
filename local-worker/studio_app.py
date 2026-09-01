@@ -38,9 +38,10 @@ from dubvi_worker import (
     transcribe,
     scan_multi_channel_raw,
     CHANNEL_DEFAULTS,
+    generate_video_thumbnail,
 )
 from auto_roi import auto_detect_subtitle_roi, scan_silent_subtitles, merge_asr_and_ocr_segments
-from llm_translator import translate_segments_native, generate_viral_hooks, PAGE_PERSONAS
+from llm_translator import translate_segments_native, generate_viral_hooks, generate_social_post_caption, PAGE_PERSONAS
 from gemini_pool import gemini_pool
 
 # Cấu hình môi trường
@@ -90,6 +91,7 @@ state = {
     "hooks": [],
     "logs": ["🟢 Hệ thống Dubvi Studio v5.0 (Stage 2 Ingest) sẵn sàng."],
     "channel_filter": "all",
+    "post_caption": "",
     "video_metadata_map": {},
 }
 
@@ -361,8 +363,19 @@ def main_page():
                 progress_bar = ui.linear_progress(value=0.0).props("stripe rounded size=10px color=indigo")
                 current_step_label = ui.label("Đang chờ lệnh...").classes("text-xs text-slate-300 font-medium")
 
+                # CARD CAPTION & HASHTAG ĐĂNG BÀI
+                with ui.column().classes("w-full bg-slate-950/80 p-2 rounded-xl border border-slate-700/60 gap-1"):
+                    with ui.row().classes("w-full items-center justify-between"):
+                        ui.label("📝 CAPTION & HASHTAG ĐĂNG BÀI").classes("text-[10px] font-black text-amber-300 uppercase tracking-wide")
+                        btn_copy_caption = ui.button("📋 Copy Nhanh", on_click=lambda: copy_caption_to_clipboard()).props("flat size=xs color=amber").classes("text-[10px] font-bold bg-amber-950/40 border border-amber-800/40 px-2 py-0.5 rounded")
+                    
+                    caption_text_area = ui.textarea(
+                        placeholder="Caption & Hashtags chuẩn SEO sẽ xuất hiện ở đây...",
+                        value=state.get("post_caption", "")
+                    ).classes("w-full text-[11px] font-mono bg-slate-900/90 rounded-lg text-slate-200").props("rows=3 dense autogrow")
+
                 # Log Box (Terminal Style sắc nét)
-                log_box = ui.log(max_lines=50).classes("w-full h-28 text-[11px] font-mono bg-slate-950/90 border border-slate-700/60 rounded-xl p-2.5 text-emerald-400 shadow-inner overflow-y-auto")
+                log_box = ui.log(max_lines=50).classes("w-full h-24 text-[11px] font-mono bg-slate-950/90 border border-slate-700/60 rounded-xl p-2 text-emerald-400 shadow-inner overflow-y-auto")
 
             # Nút Tải Video / Xem Video Master
             with ui.row().classes("w-full gap-2 pt-2 mt-auto border-t border-slate-800 bg-slate-900"):
@@ -433,6 +446,15 @@ def main_page():
                 shutil.copy2(p, target)
             return f"/raw/{target.name}?t={time.time()}"
 
+    async def copy_caption_to_clipboard():
+        text = caption_text_area.value or state.get("post_caption", "")
+        if not text:
+            ui.notify("Chưa có nội dung caption để copy!", type="warning")
+            return
+        await ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(text)});")
+        ui.notify("✅ Đã copy Caption & Hashtags vào Clipboard!", type="positive")
+        push_log("📋 Đã copy toàn bộ Caption & Hashtags sẵn sàng đăng bài.")
+
     async def select_video(path_str: str):
         if not path_str:
             return
@@ -441,6 +463,20 @@ def main_page():
             ui.notify(f"File video không tồn tại: {p.name}", type="warning")
             return
         state["selected_video"] = p
+        job_dir = DEFAULT_OUT_DIR / f"{p.stem}-full"
+
+        # Nạp caption đã lưu (nếu có)
+        caption_file = job_dir / f"{p.stem}_caption.txt"
+        if caption_file.is_file():
+            try:
+                cap_text = caption_file.read_text(encoding="utf-8")
+                state["post_caption"] = cap_text
+                caption_text_area.set_value(cap_text)
+            except Exception:
+                pass
+        else:
+            state["post_caption"] = ""
+            caption_text_area.set_value("")
         
         # 1. Trích xuất metadata Giai đoạn 1 (từ file companion .meta.json)
         item_meta = state["video_metadata_map"].get(str(p.resolve())) or {}
@@ -977,9 +1013,23 @@ def main_page():
         except Exception as exc:
             push_log(f"⚠️ Lỗi sinh Hook ({exc}).")
 
+        # Tự động sinh Caption & Hashtags đăng bài (SEO Social Post)
+        try:
+            push_log("📝 Đang tạo Caption & 7 Hashtags chuẩn SEO...")
+            caption_res = await loop.run_in_executor(None, generate_social_post_caption, segs, channel_prof)
+            if caption_res and caption_res.get("full_post"):
+                full_cap = caption_res["full_post"]
+                state["post_caption"] = full_cap
+                caption_text_area.set_value(full_cap)
+                caption_file = job_dir / f"{source.stem}_caption.txt"
+                caption_file.write_text(full_cap, encoding="utf-8")
+                push_log(f"✓ Đã lưu file Caption đăng bài: {caption_file.name}")
+        except Exception as exc:
+            push_log(f"⚠️ Lỗi tạo Caption ({exc}).")
+
         progress_bar.set_value(0.5)
-        current_step_label.set_text("Đã nạp kịch bản & Auto-Hook 3s! Sẵn sàng Render.")
-        ui.notify("Đã dịch xong kịch bản & tự động chọn Hook 3s!", type="positive")
+        current_step_label.set_text("Đã nạp kịch bản, Auto-Hook & Caption! Sẵn sàng Render.")
+        ui.notify("Đã dịch xong kịch bản & tạo Caption đăng bài!", type="positive")
 
     async def run_tts_and_render():
         try:
@@ -1030,7 +1080,7 @@ def main_page():
             push_log(f"✓ Đã sinh xong {len(voice_inputs)} file voice CapCut đồng bộ.")
 
             progress_bar.set_value(0.8)
-            current_step_label.set_text("4/4: Đang render video Full HD 1080p Kính Mờ...")
+            current_step_label.set_text("4/4: Đang render video Full HD 1080p Kính Mờ & Chuẩn hóa LUFS -14dB...")
             push_log("🎞️ Đang render FFmpeg 1080p Full HD với hiệu ứng Kính Mờ...")
 
             # Render 1080p MP4
@@ -1091,10 +1141,11 @@ def main_page():
             all_v_tags = "".join(f"[v{i}]" for i in range(1, len(voice_inputs) + 1))
             mix_voice = f"{';'.join(audio_labels)};{all_v_tags}amix=inputs={len(voice_inputs)}:duration=longest:normalize=0[allvoice]"
             
+            # Chuẩn hóa âm lượng Mobile LUFS -14dB
             if has_clean_bgm:
-                audio_filter = f"{mix_voice};[1:a]volume=0.85[bgm];[bgm][allvoice]amix=inputs=2:duration=first:normalize=0[finalaudio]"
+                audio_filter = f"{mix_voice};[1:a]volume=0.85[bgm];[bgm][allvoice]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]"
             else:
-                audio_filter = f"{mix_voice};[0:a]volume=0.22[bgm];[bgm][allvoice]amix=inputs=2:duration=first:normalize=0[finalaudio]"
+                audio_filter = f"{mix_voice};[0:a]volume=0.22[bgm];[bgm][allvoice]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]"
 
             full_cmd = cmd + [
                 "-filter_complex", f"{video_filter};{audio_filter}",
@@ -1104,7 +1155,7 @@ def main_page():
                 "-c:a", "aac", "-shortest", "-movflags", "+faststart", str(out_mp4)
             ]
             
-            # Chạy FFmpeg Native Async Subprocess - Hoàn toàn không chặn WebSocket của NiceGUI
+            # Chạy FFmpeg Native Async Subprocess
             proc = await asyncio.create_subprocess_exec(
                 *full_cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -1112,6 +1163,16 @@ def main_page():
             )
             await proc.communicate()
             
+            # Tự động tạo ảnh bìa Thumbnail TikTok
+            try:
+                hook_sentence = state["segments"][0].get("translatedTextVi", "Review Đỉnh Chóp!") if state["segments"] else "Review Đỉnh Chóp!"
+                cover_file = job_dir / f"{source.stem}_cover.jpg"
+                thumb_ok = await loop.run_in_executor(None, generate_video_thumbnail, out_mp4, hook_sentence, cover_file, 2.0)
+                if thumb_ok and cover_file.is_file():
+                    push_log(f"🖼️ Đã tạo ảnh bìa Thumbnail TikTok: {cover_file.name}")
+            except Exception as exc:
+                push_log(f"⚠️ Lỗi tạo thumbnail ({exc})")
+
             state["current_master_mp4"] = out_mp4
             master_url = get_http_video_url(out_mp4)
             push_log(f"🎉 RENDER THÀNH CÔNG: {out_mp4.name} ({out_mp4.stat().st_size/1024/1024:.2f} MB)")

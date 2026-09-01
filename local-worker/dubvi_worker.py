@@ -760,18 +760,18 @@ def render_video(
             mix_voice = f"{';'.join(audio_labels)};{inputs}amix=inputs={len(audio_segments)}:duration=longest:normalize=0[voice]"
 
         if use_clean_bgm:
-            # Dùng nhạc nền AI tách sạch tiếng Trung
-            filters.append(f"{mix_voice};[1:a]volume=0.85[bgm];[bgm][voice]amix=inputs=2:duration=first:normalize=0[finalaudio]")
+            # Dùng nhạc nền AI tách sạch tiếng Trung + chuẩn hóa âm lượng Mobile LUFS -14dB
+            filters.append(f"{mix_voice};[1:a]volume=0.85[bgm];[bgm][voice]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
         elif audio_mode == "duck":
-            # Fallback giảm âm gốc
-            filters.append(f"{mix_voice};[0:a]volume=0.22[bg];[bg][voice]amix=inputs=2:duration=longest:normalize=0[finalaudio]")
+            # Fallback giảm âm gốc + chuẩn hóa âm lượng Mobile LUFS -14dB
+            filters.append(f"{mix_voice};[0:a]volume=0.22[bg];[bg][voice]amix=inputs=2:duration=longest:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
         elif audio_mode == "keep":
-            filters.append("[0:a]anull[finalaudio]")
+            filters.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
         else:
-            # Replace: chỉ dùng voice
-            filters.append(f"{mix_voice};[voice]anull[finalaudio]")
+            # Replace: chỉ dùng voice + chuẩn hóa âm lượng Mobile LUFS -14dB
+            filters.append(f"{mix_voice};[voice]loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
     else:
-        filters.append("[0:a]anull[finalaudio]")
+        filters.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
 
     command.extend([
         "-filter_complex", ";".join(filters),
@@ -780,6 +780,76 @@ def render_video(
         "-c:a", "aac", "-shortest", "-movflags", "+faststart", str(output)
     ])
     run(command)
+
+
+def generate_video_thumbnail(
+    video_path: Path,
+    hook_text: str,
+    output_thumb_path: Path,
+    timestamp_s: float = 2.0
+) -> bool:
+    """Tự động trích xuất frame chất lượng cao và đè chữ Hook to nổi bật làm ảnh bìa (Thumbnail)."""
+    try:
+        temp_frame = output_thumb_path.parent / f"temp_{output_thumb_path.stem}.png"
+        run([
+            "ffmpeg", "-y", "-ss", f"{timestamp_s:.2f}", "-i", str(video_path),
+            "-vframes", "1", "-q:v", "1", str(temp_frame)
+        ])
+        if not temp_frame.is_file():
+            return False
+
+        wrapped = wrap_subtitle_text(hook_text, max_chars=20).replace(r"\N", "\n")
+        
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            img = Image.open(temp_frame).convert("RGBA")
+            w, h = img.size
+            draw = ImageDraw.Draw(img)
+            
+            # Chọn font hệ thống Windows
+            font_size = int(h * 0.045)  # ~86px trên 1080x1920
+            font = None
+            for font_path in [r"C:\Windows\Fonts\arialbd.ttf", r"C:\Windows\Fonts\tahomabd.ttf", r"C:\Windows\Fonts\segoeuib.ttf"]:
+                if os.path.exists(font_path):
+                    try:
+                        font = ImageFont.truetype(font_path, font_size)
+                        break
+                    except Exception:
+                        pass
+            if font is None:
+                font = ImageFont.load_default()
+
+            # Tọa độ ở 1/3 trên của màn hình
+            lines = wrapped.split("\n")
+            line_height = int(font_size * 1.3)
+            start_y = int(h * 0.26)
+            
+            for idx, line in enumerate(lines):
+                bbox = draw.textbbox((0, 0), line, font=font)
+                text_w = bbox[2] - bbox[0]
+                x_pos = (w - text_w) // 2
+                y_pos = start_y + idx * line_height
+                
+                # Viền đen 5px
+                for dx in range(-5, 6):
+                    for dy in range(-5, 6):
+                        if dx*dx + dy*dy <= 25:
+                            draw.text((x_pos + dx, y_pos + dy), line, font=font, fill=(0, 0, 0, 255))
+                # Chữ Vàng Neon Douyin
+                draw.text((x_pos, y_pos), line, font=font, fill=(255, 230, 0, 255))
+
+            img.convert("RGB").save(output_thumb_path, quality=95)
+            if temp_frame.is_file():
+                temp_frame.unlink(missing_ok=True)
+            return True
+        except Exception:
+            shutil.copy2(temp_frame, output_thumb_path)
+            if temp_frame.is_file():
+                temp_frame.unlink(missing_ok=True)
+            return True
+    except Exception as ex:
+        logging.getLogger("dubvi-worker").warning(f"Lỗi tạo thumbnail: {ex}")
+        return False
 
 
 def process_job(settings: Settings, rpc: RpcClient, job: dict[str, Any]) -> None:
