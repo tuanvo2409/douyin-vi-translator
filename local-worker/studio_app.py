@@ -255,7 +255,7 @@ def main_page():
                         on_click=lambda: preview_3s_mask()
                     ).classes("w-full bg-indigo-600/60 hover:bg-indigo-600 text-white font-bold py-1.5 rounded-lg shadow text-xs transition-all")
 
-            # KHU VỰC NÚT ĐIỀU KHIỂN RENDER (2 BƯỚC HOẶC 1-CLICK)
+            # KHU VỰC NÚT ĐIỀU KHIỂN RENDER (TỪNG BƯỚC, 1-CLICK HOẶC BATCH 100 VIDEO)
             with ui.column().classes("w-full pt-1.5 gap-1.5"):
                 with ui.row().classes("w-full gap-1.5 no-wrap"):
                     btn_step1 = ui.button(
@@ -271,10 +271,16 @@ def main_page():
                     ).classes("w-1/2 bg-slate-800 hover:bg-slate-700 text-emerald-300 font-bold py-2 rounded-xl border border-emerald-500/30 text-[11px] shadow")
 
                 btn_auto_all = ui.button(
-                    "🚀 1-CLICK TỰ ĐỘNG TOÀN BỘ",
+                    "🚀 1-CLICK VIDEO NÀY",
                     icon="bolt",
                     on_click=lambda: run_full_pipeline()
                 ).classes("w-full bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 hover:opacity-95 text-white font-black py-2.5 rounded-xl shadow-xl text-xs tracking-wider uppercase transition-all")
+
+                btn_batch_all = ui.button(
+                    "⚡ BATCH TỰ ĐỘNG CẢ THƯ MỤC",
+                    icon="auto_mode",
+                    on_click=lambda: run_batch_all_videos()
+                ).classes("w-full bg-emerald-600/90 hover:bg-emerald-600 text-white font-black py-2.5 rounded-xl shadow-lg text-[11px] tracking-wider uppercase transition-all border border-emerald-400/40")
 
         # ----------------------------------------------------
         # CỘT 2: Bảng Kịch Bản Song Ngữ AG Grid (Width: 46%)
@@ -848,18 +854,30 @@ def main_page():
         grid.update()
         segment_count_badge.set_text(f"{len(segs)} câu")
 
-        # Tự động sinh 3 gợi ý Hook 3s đầu tăng Retention TikTok
+        # Tự động sinh 3 gợi ý Hook và MẶC ĐỊNH TỰ ÁP DỤNG NGAY HOOK ĐỈNH NHẤT vào câu #1
         try:
-            push_log("🔥 Đang phân tích bối cảnh để tạo 3 Hook 3s Viral mở đầu...")
+            push_log("🔥 Đang phân tích bối cảnh để TỰ ĐỘNG CHỌN HOOK 3S ĐỈNH NHẤT...")
             hooks = await loop.run_in_executor(None, generate_viral_hooks, segs)
             update_hook_ui(hooks)
-            push_log("✓ Đã sinh 3 gợi ý Hook 3s đầu thành công!")
+            if hooks and len(hooks) > 0 and len(segs) > 0:
+                best_hook = hooks[0].get("text")
+                if best_hook:
+                    segs[0]["translatedTextVi"] = best_hook
+                    if len(row_data) > 0:
+                        row_data[0]["translatedTextVi"] = best_hook
+                    grid.options["rowData"] = row_data
+                    grid.update()
+                    try:
+                        seg_file.write_text(json.dumps(segs, ensure_ascii=False, indent=2), encoding="utf-8")
+                    except Exception:
+                        pass
+                    push_log(f"✨ [AUTO-HOOK] AI đã tự động áp dụng Hook đỉnh nhất vào câu #1: '{best_hook}'")
         except Exception as exc:
             push_log(f"⚠️ Lỗi sinh Hook ({exc}).")
 
         progress_bar.set_value(0.5)
-        current_step_label.set_text("Đã nạp kịch bản & Hook 3s! Bạn có thể chọn Hook hoặc sửa câu từ.")
-        ui.notify("Đã dịch xong kịch bản & gợi ý Hook 3s!", type="positive")
+        current_step_label.set_text("Đã nạp kịch bản & Auto-Hook 3s! Sẵn sàng Render.")
+        ui.notify("Đã dịch xong kịch bản & tự động chọn Hook 3s!", type="positive")
 
     async def run_tts_and_render():
         try:
@@ -1017,6 +1035,38 @@ def main_page():
         push_log("🚀 BẮT ĐẦU QUY TRÌNH 1-CLICK TỰ ĐỘNG TOÀN BỘ...")
         await run_transcribe_and_translate()
         await run_tts_and_render()
+
+    async def run_batch_all_videos():
+        raw_files = list(DEFAULT_RAW_DIR.rglob("*.mp4")) + list(DEFAULT_RAW_DIR.rglob("*.mov")) + list(DEFAULT_RAW_DIR.rglob("*.mkv"))
+        raw_files = [f for f in raw_files if not f.name.startswith("._") and f.stat().st_size > 1024 * 1024]
+        
+        # Lọc ra các video chưa render master
+        pending_files = []
+        for f in raw_files:
+            job_dir = DEFAULT_OUT_DIR / f"{f.stem}-full"
+            master_mp4 = job_dir / f"{f.stem}_1080p_master_vi.mp4"
+            if not (master_mp4.is_file() and master_mp4.stat().st_size > 1024 * 1024):
+                pending_files.append(f)
+
+        if not pending_files:
+            ui.notify("Tất cả video trong thư mục đã được render xong!", type="info")
+            push_log("✅ Toàn bộ video trong thư mục raw đều đã có bản 1080p Master.")
+            return
+
+        push_log(f"🚀 BẮT ĐẦU BATCH RENDER TỰ ĐỘNG {len(pending_files)} VIDEO LIÊN TIẾP (0-TOUCH AUTO-HOOK)...")
+        ui.notify(f"Bắt đầu Batch tự động {len(pending_files)} video!", type="info")
+
+        for idx, video_path in enumerate(pending_files, start=1):
+            push_log("=" * 60)
+            push_log(f"🎬 [BATCH {idx}/{len(pending_files)}] Đang xử lý tự động: {video_path.name}")
+            await select_video(str(video_path))
+            await run_full_pipeline()
+            push_log(f"✅ [BATCH {idx}/{len(pending_files)}] HOÀN TẤT XUẤT BẢN: {video_path.name}")
+
+        push_log("=" * 60)
+        push_log(f"🎉🎉 ĐÃ HOÀN THÀNH TOÀN BỘ BATCH {len(pending_files)} VIDEO XUẤT SẮC!")
+        ui.notify(f"Đã hoàn thành toàn bộ {len(pending_files)} video!", type="positive")
+        refresh_video_list()
 
     def play_master_video():
         if state["current_master_mp4"] and state["current_master_mp4"].is_file():
