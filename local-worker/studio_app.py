@@ -36,9 +36,11 @@ from dubvi_worker import (
     fit_voice,
     synthesize,
     transcribe,
+    scan_multi_channel_raw,
+    CHANNEL_DEFAULTS,
 )
 from auto_roi import auto_detect_subtitle_roi, scan_silent_subtitles, merge_asr_and_ocr_segments
-from llm_translator import translate_segments_native, generate_viral_hooks
+from llm_translator import translate_segments_native, generate_viral_hooks, CTA_TEMPLATES, PAGE_PERSONAS
 from gemini_pool import gemini_pool
 
 # Cấu hình môi trường
@@ -47,6 +49,7 @@ settings = Settings.from_env()
 
 # Thư mục làm việc
 DEFAULT_RAW_DIR = Path(r"C:\Users\vmath\Downloads\video douyin raw")
+DEFAULT_REUP_DIR = Path(r"C:\Users\vmath\Downloads\douyinnnnnnnnnnn\video reup raw")
 DEFAULT_OUT_DIR = Path(r"C:\Users\vmath\Videos\douyin\dubvi-output")
 DEFAULT_RAW_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -54,6 +57,8 @@ DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
 # Mount các thư mục video trên máy để phát trực tiếp qua HTTP Range streaming
 app.add_static_files("/output", str(DEFAULT_OUT_DIR))
 app.add_static_files("/raw", str(DEFAULT_RAW_DIR))
+if DEFAULT_REUP_DIR.is_dir():
+    app.add_static_files("/reup_raw", str(DEFAULT_REUP_DIR))
 app.add_static_files("/downloads", r"C:\Users\vmath\Downloads")
 app.add_static_files("/videos", r"C:\Users\vmath\Videos")
 
@@ -79,16 +84,19 @@ state = {
     "status_text": "Sẵn sàng",
     "selected_voice": settings.capcut_voice,
     "font_name": "Arial",
-    "font_size": 56,
-    "font_color": "#FFFFFF",
-    "roi": {"xPercent": 2.0, "yPercent": 66.0, "widthPercent": 96.0, "heightPercent": 9.8, "blurPx": 24},
+    "font_size": 44,
+    "font_color": "#FFE600",
+    "roi": {"xPercent": 2.0, "yPercent": 65.0, "widthPercent": 96.0, "heightPercent": 14.0, "blurPx": 24},
     "hooks": [],
-    "logs": ["🟢 Hệ thống Dubvi Studio v4.5 sẵn sàng."],
+    "logs": ["🟢 Hệ thống Dubvi Studio v5.0 (Stage 2 Ingest) sẵn sàng."],
+    "channel_filter": "all",
+    "selected_cta_type": "tiktok_shop",
+    "video_metadata_map": {},
 }
 
 VOICE_OPTIONS = {
-    "BV421_vivn_streaming": "Mai (CapCut - Nữ truyền cảm, review Douyin)",
-    "BV007_streaming": "Minh Quang (CapCut - Nam trầm ấm, tự nhiên)",
+    "BV421_vivn_streaming": "Mai (CapCut - Nữ miền Bắc review, dí dỏm)",
+    "BV007_streaming": "Minh Quang (CapCut - Nam miền Bắc trầm ấm, drama)",
     "BV001_streaming": "Ngọc Mai (CapCut - Nữ ngọt ngào, nhẹ nhàng)",
     "BV004_streaming": "Hải Đăng (CapCut - Nam review, kể chuyện)",
     "vi-VN-HoaiMyNeural": "Hoài My (Edge-TTS - Nữ chuẩn phát thanh)",
@@ -96,55 +104,67 @@ VOICE_OPTIONS = {
 }
 
 COLOR_OPTIONS = {
-    "#FFFFFF": "⚪ Trắng Tinh Khôi (Chuẩn)",
     "#FFE600": "🟡 Vàng Nổi Bật (Trend Douyin/TikTok)",
+    "#FFFFFF": "⚪ Trắng Tinh Khôi (Chuẩn)",
     "#00FFFF": "🌐 Xanh Cyan Neon",
     "#00FF7F": "🟢 Xanh Lá Sáng",
     "#FF69B4": "🌸 Hồng Pastel",
     "#FFA500": "🟠 Cam Năng Động",
 }
 
+CTA_OPTIONS = {
+    "tiktok_shop": "🛍️ TikTok Shop / Giỏ hàng góc trái (Mặc định)",
+    "fanpage_inbox": "📩 Fanpage / Inbox nhận link",
+    "follow_retention": "❤️ Thả tim & Follow kênh",
+    "none": "❌ Tắt CTA (Không chèn)"
+}
 
-def scan_raw_videos() -> List[Dict[str, Any]]:
-    """Quét toàn bộ video mp4 trong thư mục raw (kể cả thư mục con) và Downloads, sắp xếp mới nhất lên đầu."""
-    raw_files = []
-    seen = set()
-    
-    # 1. Quét sâu trong DEFAULT_RAW_DIR
-    if DEFAULT_RAW_DIR.is_dir():
-        for p in list(DEFAULT_RAW_DIR.rglob("*.mp4")) + list(DEFAULT_RAW_DIR.rglob("*.mov")) + list(DEFAULT_RAW_DIR.rglob("*.mkv")):
-            if p.is_file() and not p.name.startswith("_") and str(p.resolve()) not in seen:
-                seen.add(str(p.resolve()))
-                raw_files.append(p)
-                
-    # 2. Quét Downloads & Videos ngoài
-    for d in [Path(r"C:\Users\vmath\Downloads"), Path(r"C:\Users\vmath\Videos")]:
-        if d.is_dir():
-            for p in list(d.glob("*.mp4")) + list(d.glob("*.mov")) + list(d.glob("*.mkv")):
-                if p.is_file() and not p.name.startswith("_") and str(p.resolve()) not in seen:
-                    seen.add(str(p.resolve()))
-                    raw_files.append(p)
-                    
-    # Sắp xếp video mới nhất lên đầu tiên theo thời gian sửa đổi (mtime)
-    raw_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+CHANNEL_FILTER_OPTIONS = {
+    "all": "🌐 Tất cả các Page & Thư mục",
+    "page_giai_cuu_chuong_lon": "🐷 Page: Giải Cứu Chuồng Lợn (Review / Before-After)",
+    "page_goc_tro_bat_on": "🏠 Page: Góc Trọ Bất Ổn (Drama KTX / Ở Chung)",
+    "other": "📁 Thư mục khác (Downloads / Videos)"
+}
+
+
+def scan_raw_videos(channel_filter: str = "all") -> List[Dict[str, Any]]:
+    """Quét toàn bộ video từ Giai đoạn 1 (video reup raw/...) và thư mục máy, kết hợp đọc file .meta.json."""
+    raw_items = scan_multi_channel_raw()
     
     videos = []
-    for p in raw_files:
-        size_mb = p.stat().st_size / (1024 * 1024)
-        parent_title = p.parent.name if p.parent.name != DEFAULT_RAW_DIR.name else ""
-        label_name = f"{parent_title}/{p.name}" if parent_title else p.name
+    for item in raw_items:
+        p = item["video_path"]
+        str_path = str(p.resolve())
+        state["video_metadata_map"][str_path] = item
         
+        # Áp dụng bộ lọc kênh
+        channel_prof = item["channel_profile"].lower().replace(" ", "_").replace("-", "_")
+        if channel_filter == "page_giai_cuu_chuong_lon" and not ("chuong_lon" in channel_prof or "giai_cuu" in channel_prof):
+            continue
+        if channel_filter == "page_goc_tro_bat_on" and not ("goc_tro" in channel_prof or "bat_on" in channel_prof):
+            continue
+        if channel_filter == "other" and ("chuong_lon" in channel_prof or "goc_tro" in channel_prof):
+            continue
+            
         # Nhận diện trạng thái đã render hay là video mới
         job_dir = DEFAULT_OUT_DIR / f"{p.stem}-full"
         master_mp4 = job_dir / f"{p.stem}_1080p_master_vi.mp4"
         is_rendered = master_mp4.is_file() and master_mp4.stat().st_size > 1024 * 1024
-        status_tag = "✅ [ĐÃ RENDER]" if is_rendered else "✨ [MỚI]"
+        status_tag = "✅" if is_rendered else "✨"
+        
+        channel_tag = f"[{item['channel_name']}]" if item.get("channel_name") else ""
+        platform_tag = f"[{item['target_platform'].upper()}]" if item.get("target_platform") else ""
+        vpdq_tag = f"[vPDQ: {item['vpdq_similarity']}%]" if item.get("vpdq_similarity") else ""
+        
+        label_parts = [status_tag, channel_tag, platform_tag, vpdq_tag, p.name, f"({item['size_mb']} MB)"]
+        label_text = " ".join(part for part in label_parts if part)
 
         videos.append({
-            "name": f"{status_tag} {label_name}",
-            "path": str(p),
-            "size": f"{size_mb:.1f} MB",
-            "is_rendered": is_rendered
+            "name": label_text,
+            "path": str_path,
+            "size": f"{item['size_mb']} MB",
+            "is_rendered": is_rendered,
+            "item_meta": item
         })
     return videos
 
@@ -173,30 +193,46 @@ def main_page():
         with ui.column().classes("w-1/4 h-full bg-slate-900/80 rounded-2xl p-3 border border-slate-800 flex flex-col justify-between shadow-xl backdrop-blur-md overflow-hidden"):
             # Vùng nội dung cài đặt (Xếp thẻ liền mạch, đẹp mắt)
             with ui.column().classes("w-full gap-2.5"):
-                # CARD 1: VIDEO NGUỒN (TỐI GIẢN - 1 CÁCH DUY NHẤT)
+                # CARD 1: VIDEO NGUỒN & AUTO-INGEST GIAI ĐOẠN 1
                 with ui.column().classes("w-full bg-slate-800/40 p-2.5 rounded-xl border border-slate-800/80 gap-2"):
                     with ui.row().classes("w-full items-center justify-between"):
-                        ui.label("📁 VIDEO NGUỒN").classes("text-[11px] font-extrabold tracking-wider text-indigo-400 uppercase")
+                        ui.label("📁 AUTO-INGEST ĐA KÊNH").classes("text-[11px] font-extrabold tracking-wider text-indigo-400 uppercase")
                         ui.button(icon="refresh", on_click=lambda: refresh_video_list()).props("round flat size=xs color=indigo").tooltip("Quét lại video")
+
+                    channel_filter_select = ui.select(
+                        options=CHANNEL_FILTER_OPTIONS,
+                        value=state["channel_filter"],
+                        label="Lọc theo Kênh / Page",
+                        on_change=lambda e: on_channel_filter_changed(e.value)
+                    ).classes("w-full bg-slate-900/60 rounded-lg text-xs").props("dense options-dense")
 
                     video_select = ui.select(
                         options={},
-                        label="Chọn video Douyin",
+                        label="Chọn video Douyin sạch",
                         on_change=lambda e: select_video(e.value) if e.value else None
                     ).classes("w-full bg-slate-900/60 rounded-lg text-xs").props("dense options-dense")
 
-                    ui.upload(
-                        label="📂 BẤM ĐỂ CHỌN VIDEO TỪ MÁY...",
-                        auto_upload=True,
-                        max_files=1,
-                        on_upload=lambda e: handle_browser_upload(e)
-                    ).props("dense flat bordered accept='video/*,.mp4,.mov,.mkv,.avi' color=indigo").classes("w-full text-xs font-bold bg-slate-900/40 rounded-lg border border-indigo-500/40 shadow-sm")
+                    meta_badge_row = ui.row().classes("w-full items-center gap-1 text-[10px]")
+                    with meta_badge_row:
+                        channel_badge = ui.badge("🌐 Đa Kênh", color="indigo").classes("text-[9px] font-bold")
+                        platform_badge = ui.badge("📱 TikTok", color="pink").classes("text-[9px] font-bold")
+                        vpdq_badge = ui.badge("🛡️ vPDQ: PASSED", color="emerald").classes("text-[9px] font-bold")
 
                     selected_file_label = ui.label("🎬 Chưa chọn video").classes("text-[11px] text-indigo-300 font-bold truncate w-full px-1")
 
-                # CARD 2: GIỌNG ĐỌC
+                # CARD 2: CHIẾN LƯỢC KỊCH BẢN & CTA CHỐT ĐƠN (CONVERSION)
+                with ui.column().classes("w-full bg-slate-800/40 p-2.5 rounded-xl border border-slate-800/80 gap-2"):
+                    ui.label("🎯 CTA CHỐT ĐƠN CUỐI CLIP").classes("text-[11px] font-extrabold tracking-wider text-amber-400 uppercase")
+                    cta_select = ui.select(
+                        options=CTA_OPTIONS,
+                        value=state["selected_cta_type"],
+                        label="Kêu gọi hành động (CTA)",
+                        on_change=lambda e: update_cta(e.value)
+                    ).classes("w-full bg-slate-900/60 rounded-lg text-xs").props("dense options-dense")
+
+                # CARD 3: GIỌNG ĐỌC CAPCUT VIRAL
                 with ui.column().classes("w-full bg-slate-800/40 p-2.5 rounded-xl border border-slate-800/80 gap-1"):
-                    ui.label("🎙️ GIỌNG ĐỌC CAPCUT").classes("text-[11px] font-extrabold tracking-wider text-indigo-400 uppercase")
+                    ui.label("🎙️ GIỌNG ĐỌC CAPCUT (VIRAL VOICE)").classes("text-[11px] font-extrabold tracking-wider text-indigo-400 uppercase")
                     voice_select = ui.select(
                         options=VOICE_OPTIONS,
                         value=state["selected_voice"],
@@ -205,11 +241,11 @@ def main_page():
                     ).classes("w-full bg-slate-900/60 rounded-lg text-xs").props("dense options-dense")
                     sample_audio_player = ui.audio("").classes("hidden")
 
-                # CARD 3: CÀI ĐẶT & XEM TRƯỚC PHỤ ĐỀ (GOM CHUNG 1 NƠI)
+                # CARD 4: CÀI ĐẶT & XEM TRƯỚC PHỤ ĐỀ SAFE ZONE
                 with ui.column().classes("w-full bg-slate-800/40 p-2.5 rounded-xl border border-slate-800/80 gap-2"):
                     with ui.row().classes("w-full items-center justify-between"):
-                        ui.label("🔤 PHỤ ĐỀ & KÍNH MỜ").classes("text-[11px] font-extrabold tracking-wider text-indigo-400 uppercase")
-                        roi_badge = ui.badge("AI Mask: Y=68%", color="purple").classes("text-[10px] font-bold")
+                        ui.label("🔤 PHỤ ĐỀ SAFE ZONE 22%").classes("text-[11px] font-extrabold tracking-wider text-indigo-400 uppercase")
+                        roi_badge = ui.badge("Safe: 22%", color="purple").classes("text-[10px] font-bold")
 
                     with ui.row().classes("w-full gap-1.5 no-wrap"):
                         font_select = ui.select(
@@ -411,6 +447,41 @@ def main_page():
             return
         state["selected_video"] = p
         
+        # 1. Trích xuất metadata Giai đoạn 1 (từ file companion .meta.json)
+        item_meta = state["video_metadata_map"].get(str(p.resolve())) or {}
+        if item_meta:
+            ch_name = item_meta.get("channel_name", "Đa Kênh")
+            channel_icon = "🐷" if "chuong_lon" in item_meta.get("channel_profile", "") else "🏠"
+            channel_badge.set_text(f"{channel_icon} {ch_name}")
+            
+            plat = item_meta.get("target_platform", "TikTok").upper()
+            platform_badge.set_text(f"📱 {plat}")
+            
+            vpdq_sim = item_meta.get("vpdq_similarity")
+            if vpdq_sim is not None:
+                vpdq_badge.set_text(f"🛡️ vPDQ: {vpdq_sim}% PASSED")
+                vpdq_badge.props("color=emerald")
+            else:
+                vpdq_badge.set_text("✨ Raw Video")
+                vpdq_badge.props("color=indigo")
+                
+            # Tự động chọn giọng đọc chuẩn theo kênh
+            def_voice = item_meta.get("default_voice")
+            if def_voice and def_voice in VOICE_OPTIONS:
+                state["selected_voice"] = def_voice
+                voice_select.set_value(def_voice)
+                
+            # Tự động chọn màu chữ chuẩn theo kênh
+            def_color = item_meta.get("color")
+            if def_color and def_color in COLOR_OPTIONS:
+                state["font_color"] = def_color
+                color_select.set_value(def_color)
+        else:
+            channel_badge.set_text("🌐 Đa Kênh")
+            platform_badge.set_text("📱 Video")
+            vpdq_badge.set_text("✨ Raw Video")
+            vpdq_badge.props("color=indigo")
+
         # Đảm bảo dropdown và các nhãn hiển thị đúng
         job_dir = DEFAULT_OUT_DIR / f"{p.stem}-full"
         master_mp4 = job_dir / f"{p.stem}_1080p_master_vi.mp4"
@@ -418,31 +489,31 @@ def main_page():
 
         cur_opts = dict(video_select.options or {})
         if str(p) not in cur_opts:
-            status_tag = "✅ [ĐÃ RENDER]" if is_rendered else "✨ [MỚI]"
+            status_tag = "✅" if is_rendered else "✨"
             cur_opts[str(p)] = f"{status_tag} {p.name} ({p.stat().st_size / 1024 / 1024:.1f} MB)"
             video_select.set_options(cur_opts)
         if video_select.value != str(p):
             video_select.value = str(p)
 
-        # 1. Cập nhật nhãn và trạng thái rõ ràng trên toàn bộ giao diện
+        # 2. Cập nhật nhãn và trạng thái rõ ràng trên toàn bộ giao diện
         if is_rendered:
             video_status_badge.set_text("✅ ĐÃ RENDER")
             video_status_badge.props("color=emerald")
-            status_label.set_text("🎉 Video này đã được xử lý & xuất bản 1080p Master")
+            status_label.set_text("🎉 Video này đã được xuất bản 1080p Master")
             btn_auto_all.set_text("🔄 RENDER LẠI (NẾU SỬA KỊCH BẢN)")
             selected_file_label.set_text(f"✅ {p.name} (Đã Render - {p.stat().st_size/1024/1024:.1f} MB)")
-            push_log(f"📌 [VIDEO ĐÃ RENDER] {p.name} -> Đã nạp ngay bản Master 1080p!")
+            push_log(f"📌 [VIDEO ĐÃ RENDER] {p.name} -> Đã nạp bản Master 1080p!")
         else:
             video_status_badge.set_text("✨ MỚI")
             video_status_badge.props("color=blue")
             status_label.set_text("🟢 Video mới sẵn sàng — Bấm 1-Click để bắt đầu!")
             btn_auto_all.set_text("🚀 1-CLICK TỰ ĐỘNG TOÀN BỘ")
             selected_file_label.set_text(f"✨ {p.name} (Mới - {p.stat().st_size/1024/1024:.1f} MB)")
-            push_log(f"📌 [VIDEO MỚI TINH] {p.name} -> Đã phát video gốc, sẵn sàng chạy quy trình AI.")
+            push_log(f"📌 [VIDEO MỚI TINH] {p.name} -> Sẵn sàng chạy chuỗi Stage 2 AI.")
 
         current_video_title.set_text(p.name)
 
-        # 2. Xử lý kịch bản:
+        # 3. Xử lý kịch bản:
         seg_file = job_dir / "segments.json"
         if seg_file.is_file():
             try:
@@ -475,7 +546,7 @@ def main_page():
             progress_bar.set_value(0.0)
             current_step_label.set_text("Video mới chưa xử lý. Bấm [1-Click Tự Động Toàn Bộ] để bắt đầu...")
 
-        # 3. Xử lý Video Player:
+        # 4. Xử lý Video Player:
         if is_rendered:
             state["current_master_mp4"] = master_mp4
             video_player.set_source(get_http_video_url(master_mp4))
@@ -710,7 +781,9 @@ def main_page():
         ui.notify("Đang gọi AI sáng tạo 8 Hook mới theo Ma trận Túi Kịch Bản...", type="info")
         push_log("🧠 Đang phân tích bối cảnh kịch bản để tạo 8 Hook 3s mới theo Ma trận Túi Kịch Bản...")
         loop = asyncio.get_event_loop()
-        new_hooks = await loop.run_in_executor(None, generate_viral_hooks, state["segments"])
+        meta_info = state["video_metadata_map"].get(str(state["selected_video"].resolve())) or {} if state.get("selected_video") else {}
+        channel_prof = meta_info.get("channel_profile")
+        new_hooks = await loop.run_in_executor(None, generate_viral_hooks, state["segments"], None, channel_prof)
         update_hook_ui(new_hooks)
         push_log("✓ Đã cập nhật 8 gợi ý Hook 3s mới!")
         ui.notify("Đã tạo xong 8 Hook mới!", type="positive")
@@ -857,9 +930,14 @@ def main_page():
 
         progress_bar.set_value(0.4)
         current_step_label.set_text("2/4: Gemini 2.5 Flash chuyển ngữ bản xứ...")
-        push_log("🧠 Đang gọi Google Gemini 2.5 Flash chuyển ngữ kịch bản...")
+        
+        meta_info = state["video_metadata_map"].get(str(source.resolve())) or {}
+        channel_prof = meta_info.get("channel_profile")
+        cta_opt = state.get("selected_cta_type") if state.get("selected_cta_type") != "none" else None
+        
+        push_log(f"🧠 Đang gọi Google Gemini 2.5 Flash chuyển ngữ (Kênh: {meta_info.get('channel_name', 'Đa Kênh')}, CTA: {state.get('selected_cta_type')})...")
         segs = await loop.run_in_executor(
-            None, translate_segments_native, segs, "gemini"
+            None, translate_segments_native, segs, "gemini", None, None, None, channel_prof, cta_opt
         )
         state["segments"] = segs
         try:
@@ -884,10 +962,10 @@ def main_page():
         grid.update()
         segment_count_badge.set_text(f"{len(segs)} câu")
 
-        # Tự động sinh 3 gợi ý Hook và MẶC ĐỊNH TỰ ÁP DỤNG NGAY HOOK ĐỈNH NHẤT vào câu #1
+        # Tự động sinh 8 gợi ý Hook và MẶC ĐỊNH TỰ ÁP DỤNG NGAY HOOK ĐỈNH NHẤT vào câu #1
         try:
             push_log("🔥 Đang phân tích bối cảnh để TỰ ĐỘNG CHỌN HOOK 3S ĐỈNH NHẤT...")
-            hooks = await loop.run_in_executor(None, generate_viral_hooks, segs)
+            hooks = await loop.run_in_executor(None, generate_viral_hooks, segs, None, channel_prof)
             update_hook_ui(hooks)
             if hooks and len(hooks) > 0 and len(segs) > 0:
                 best_hook = hooks[0].get("text")

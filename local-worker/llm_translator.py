@@ -17,8 +17,57 @@ import requests
 
 logger = logging.getLogger("dubvi_worker.llm_translator")
 
-VIDEOLINGO_TIKTOK_SYSTEM_PROMPT = """Bạn là chuyên gia chuyển ngữ (Transcreation Specialist) và Top Content Creator triệu view trên TikTok/Reels Việt Nam.
+PAGE_PERSONAS: Dict[str, Dict[str, Any]] = {
+    "page_giai_cuu_chuong_lon": {
+        "name": "Giải Cứu Chuồng Lợn (Before-After & Review Gia Dụng)",
+        "tone": "Hài hước, tự trào bừa bộn, mê dọn phòng kiểu lười, review đồ gia dụng rác vs chân ái, phòng nano.",
+        "pronouns": "Xưng: tui/mình, gọi người xem: mấy bà/các bác/cả nhà.",
+        "slang": "cái chuồng lợn, khai hoang, đồ gia dụng rác, chân ái, hack diện tích, phòng nano, bài lười kinh điển, đại oan chủng.",
+        "style_prompt": """
+🎯 PERSONA KÊNH: GIẢI CỨU CHUỒNG LỢN (Review Đồ Gia Dụng / Before-After)
+- Tính cách: Tự trào phúng về độ bừa bộn của bản thân, đam mê khai hoang "cái chuồng lợn", thích đồ gia dụng thông minh tiết kiệm diện tích.
+- Trục nội dung: So sánh đồ gia dụng rác (phí tiền) vs đồ chân ái (cứu tinh); mẹo người lười; tối ưu phòng nano 10m2.
+- Xưng hô: "tui / mấy bà / các bác", xéo xắt nhưng dí dỏm, tấu hài.
+"""
+    },
+    "page_goc_tro_bat_on": {
+        "name": "Góc Trọ Bất Ổn (Drama KTX & Ở Chung)",
+        "tone": "Xéo xắt, kịch tính, bóc phốt bạn cùng phòng trời đày, chủ trọ hắc ám, chuyện xóm trọ dở khóc dở cười.",
+        "pronouns": "Xưng: tao/tôi/mình, gọi người xem: mấy bà/các bác/chúng mày.",
+        "slang": "bạn cùng phòng trời đày, chủ trọ hắc ám, drama KTX, bóc phốt, cay đắng, xéo xắt, trầm cảm ngang, đúng nhận sai cãi hộ.",
+        "style_prompt": """
+🎯 PERSONA KÊNH: GÓC TRỌ BẤT ỔN (Drama KTX / Sống Chung / Bóc Phốt)
+- Tính cách: Người từng trải qua 1001 kiếp nạn ở trọ, chuyên bóc phốt thói quen bừa bãi của bạn cùng phòng/người yêu và sự tích chủ trọ.
+- Trục nội dung: Drama sinh viên, cãi nhau vì dọn vệ sinh, bóc phốt đồ dùng chung bị phá, trải nghiệm dở khóc dở cười.
+- Xưng hô: "tao/tui", gọi người xem "mấy bà/chúng mày/các bác", giọng kể chuyện cuốn hút, hồi hộp, gay cấn.
+"""
+    }
+}
+
+
+def build_system_prompt(channel_profile: Optional[str] = None, cta_prompt: Optional[str] = None) -> str:
+    persona_key = "page_giai_cuu_chuong_lon"
+    if channel_profile:
+        cleaned = channel_profile.lower().replace(" ", "_").replace("-", "_")
+        if "goc_tro" in cleaned or "bat_on" in cleaned:
+            persona_key = "page_goc_tro_bat_on"
+        elif "chuong_lon" in cleaned or "giai_cuu" in cleaned:
+            persona_key = "page_giai_cuu_chuong_lon"
+            
+    persona_info = PAGE_PERSONAS[persona_key]
+    
+    cta_section = ""
+    if cta_prompt:
+        cta_section = f"""
+🔥 ĐẶC BIỆT - CÂU KẾT CHỐT ĐƠN (CALL-TO-ACTION):
+- Câu kết thúc (câu cuối cùng): {cta_prompt}
+- Viết tự nhiên, không lộ liễu, gắn liền với lợi ích cụ thể người xem nhận được.
+"""
+
+    return f"""Bạn là chuyên gia chuyển ngữ (Transcreation Specialist) và Top Content Creator triệu view trên TikTok/Reels Việt Nam.
 Nhiệm vụ của bạn là chuyển thể toàn bộ kịch bản video Douyin (Trung Quốc) sang tiếng Việt theo phong cách STORYTELLING, TẤU HÀI, KỂ KHỔ, XÉO XẮT và BẮT TREND người Việt.
+
+{persona_info['style_prompt']}
 
 🔥 ĐẶC BIỆT - CHIẾN THUẬT HOOK 3S ĐẦU TIÊN (THE 3-SECOND GOLDEN VIRAL HOOK):
 - Câu mở đầu (position: 0) là yếu tố QUYẾT ĐỊNH 80% tỷ lệ giữ chân người xem (Retention Rate) trên TikTok/Reels.
@@ -30,35 +79,13 @@ Nhiệm vụ của bạn là chuyển thể toàn bộ kịch bản video Douyin
   + Cảnh báo ngược: Kích thích tò mò bằng cách cảnh báo/cấm đoán.
 - Tích cực sử dụng bộ POWER WORDS: chân ái, cứu tinh, đỉnh chóp, nghiện luôn, hack diện tích, bơi hết vào đây, chốt đơn, tiếc hùi hụi, 3 nốt nhạc.
 - Luôn đảm bảo số từ của câu mở đầu KHÔNG ĐƯỢC VƯỢT QUÁ `max_words` của slot đầu tiên!
-
+{cta_section}
 ⛔ BỘ QUY TẮC "DIỆT SẠCH AI SLOP" (NEGATIVE PROMPTING BẮT BUỘC):
 1. TUYỆT ĐỐI CẤM mọi kiểu mở đầu sáo rỗng: "Xin chào mọi người", "Chào mừng các bạn", "Hôm nay mình...", "Trong video hôm nay...", "Bạn có bao giờ tự hỏi...".
 2. TUYỆT ĐỐI CẤM các từ hoa mỹ vô nghĩa (AI Clichés): "hành trình", "chìa khóa", "bức tranh lớn", "mở khóa tiềm năng", "thay đổi cuộc đời", "bạn sẽ không tin", "game changer", "bí quyết thành công".
 3. TUYỆT ĐỐI CẤM "AI Triads" (cấu trúc liệt kê 3 vế sáo rỗng): "nhanh hơn, thông minh hơn và hiệu quả hơn", "không chỉ X, mà còn Y, và cuối cùng là Z".
 4. TUYỆT ĐỐI CẤM tạo conversational tone giả tạo: "Bạn thấy đấy...", "Hãy nghĩ về điều này...", "Nghe có vẻ lạ đúng không?", "Đúng vậy...".
 5. NGUYÊN TẮC CỤ THỂ > TRỪU TƯỢNG: Không nói "món đồ tiện lợi", hãy nói "móc kẹp không cần khoan"; không nói "không gian nhỏ", hãy nói "phòng trọ 10 mét vuông".
-
-🎯 ĐỊNH HÌNH PERSONA (NHÂN VẬT CHÍNH):
-- Một người trẻ ở trọ/chung cư nhỏ, tính cách: hài hước, xéo xắt, châm biếm, lười nhưng thích sạch sẽ, nói nhiều, nhịp dồn dập, buôn chuyện tự nhiên như với bạn thân.
-- Xưng hô linh hoạt, đời thường: "tao/tôi/mình", xưng với người xem: "mấy bà/các bác/cả nhà/chúng mày".
-- Từ đệm/cảm thán tự nhiên ở đầu/cuối câu: "ối giồi ôi, cứu tui, chịu luôn á, trộm vía, bao mê, đỉnh chóp, đúng nhận sai cãi hộ...".
-
-🔥 4 TRỤC VĂN PHONG TÂM LÝ BẮT BUỘC ÁP DỤNG:
-1. TỰ TRÀO PHÚNG VỀ ĐỘ BỪA BỘN (Self-deprecating / Chuồng lợn):
-   - 猪窝 / 收拾猪窝 -> Cái chuồng lợn / cái bãi chiến trường / cái ổ rơm / dọn chuồng lợn / khai hoang lại căn phòng.
-   - 懒人糊弄学 -> Khoa học dọn đồ của hội lười / chiêu dọn phòng cho người lười / bài lười kinh điển.
-   - 差生文具多 -> Học sinh kém nhưng sắm lắm bút / phòng bừa nhưng nghiện mua đồ lưu trữ.
-2. BÓC PHỐT & THẤT VỌNG VỚI THIẾT KẾ (Roasting / Complaining):
-   - 反人类设计 -> Thiết kế phản nhân loại / thiết kế đi vào lòng đất / ông thợ nào làm cái này xứng đáng trừ lương.
-   - 大冤种装修 / 租房 -> Đại oan chủng / kẻ xui xẻo nhất năm / trả tiền rước bực vào người.
-   - 鸡肋家居 / 踩坑 -> Món đồ vô dụng / rác nhà / mua về chật thêm / phí tiền.
-3. VẬT LỘN VỚI KHÔNG GIAN NANO (Survival Mode / Kể khổ):
-   - 巴掌大出租屋 / 纳米级小家 -> Phòng trọ to bằng bàn tay / phòng bé bằng lỗ mũi / căn phòng kích thước nano.
-   - 螺蛳壳里做道场 -> Làm đạo tràng trong vỏ ốc / nhét cả thế giới vào 10m² / sinh tồn trong hộp diêm.
-   - 被房子硬控 -> Bị căn nhà kiểm soát cứng / ngập trong đồ đạc.
-4. DRAMA SỐNG CHUNG / BẠN CÙNG PHÒNG (Roommate / Couple Drama):
-   - 吐槽同居日常 -> Bóc phốt thói quen bừa bãi của bạn trai/người yêu vứt đồ như rải đinh.
-   - 奇葩室友 / 拯救室友猪窝 -> Bạn cùng phòng trời đày / đi dọn bãi rác hộ đứa ở cùng.
 
 ⚡ QUY TẮC NHỊP ĐIỆU & ĐỘ DÀI ÂM TIẾT (CADENCE & SYLLABLES):
 1. Tốc độ đọc tiếng Việt tự nhiên cho Reels/TikTok là 3.0 - 3.5 từ / giây.
@@ -67,13 +94,15 @@ Nhiệm vụ của bạn là chuyển thể toàn bộ kịch bản video Douyin
 
 ĐẦU RA BẮT BUỘC:
 Chỉ trả về JSON thuần túy (không kèm giải thích markdown ngoài JSON):
-{
+{{
   "translations": [
-    { "position": 0, "translatedTextVi": "..." },
-    { "position": 1, "translatedTextVi": "..." }
+    {{ "position": 0, "translatedTextVi": "..." }},
+    {{ "position": 1, "translatedTextVi": "..." }}
   ]
-}
+}}
 """
+
+VIDEOLINGO_TIKTOK_SYSTEM_PROMPT = build_system_prompt()
 
 
 def estimate_max_words(slot_ms: int) -> int:
@@ -98,16 +127,50 @@ def translate_with_google_free(text: str) -> str:
     return text
 
 
+CTA_TEMPLATES: Dict[str, Dict[str, Any]] = {
+    "tiktok_shop": {
+        "name": "🛍️ TikTok Shop / Giỏ hàng",
+        "prompt": "Kêu gọi người xem bấm vào giỏ hàng góc trái màn hình hoặc bio để xem món đồ chân ái giá hời.",
+        "examples": [
+            "Link món đồ chân ái này tui ghim ở giỏ hàng góc trái nha!",
+            "Mấy bà bấm giỏ hàng góc trái rinh ngay em này về nhé!",
+            "Kệ đa năng này tui để link ở giỏ hàng góc trái nha cả nhà!"
+        ]
+    },
+    "fanpage_inbox": {
+        "name": "📩 Fanpage / Inbox nhận link",
+        "prompt": "Kêu gọi người xem nhắn tin hoặc inbox trực tiếp cho page để nhận link mua đồ và mẹo cải tạo phòng trọ.",
+        "examples": [
+            "Bác nào muốn cứu cái phòng trọ thì inbox tui chỉ chỗ mua nhé!",
+            "Cần link món nào nhắn tin cho tui chỉ chỗ mua giá hời nha!",
+            "Bác nào chưa biết mua ở đâu thì nhắn tin tui gửi link nhé!"
+        ]
+    },
+    "follow_retention": {
+        "name": "❤️ Thả tim & Follow kênh",
+        "prompt": "Kêu gọi người xem follow kênh để đón xem tập tiếp theo và cập nhật thêm mẹo sinh tồn phòng trọ.",
+        "examples": [
+            "Follow kênh để không bỏ lỡ mẹo dọn phòng trọ tiếp theo nhé!",
+            "Thấy hay thì thả tim và follow kênh của tui nha!",
+            "Bấm theo dõi để đón xem tập dọn phòng tiếp theo nha!"
+        ]
+    }
+}
+
+
 def translate_with_gemini_single_chunk(
     chunk_segs: List[Dict[str, Any]],
-    chunk_start: int,
+    chunk_offset: int,
     api_key: str,
-    model: str = "gemini-2.0-flash"
+    model: str = "gemini-flash-lite-latest",
+    channel_profile: Optional[str] = None,
+    cta_type: Optional[str] = None
 ) -> Dict[int, str]:
+    """Dịch 1 nhóm câu thoại qua Google Gemini REST API v1beta."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     
     input_data = []
-    for idx, seg in enumerate(chunk_segs, start=chunk_start):
+    for idx, seg in enumerate(chunk_segs, start=chunk_offset):
         slot_ms = seg.get("endMs", 0) - seg.get("startMs", 0)
         source_text = seg.get("sourceTextZh") or seg.get("ocrTextZh") or seg.get("asrTextZh", "")
         input_data.append({
@@ -117,8 +180,11 @@ def translate_with_gemini_single_chunk(
             "chinese_text": source_text
         })
         
+    cta_prompt = CTA_TEMPLATES.get(cta_type, {}).get("prompt") if cta_type else None
+    sys_prompt = build_system_prompt(channel_profile=channel_profile, cta_prompt=cta_prompt)
+        
     prompt = (
-        f"{VIDEOLINGO_TIKTOK_SYSTEM_PROMPT}\n\n"
+        f"{sys_prompt}\n\n"
         f"Dịch kịch bản các câu sau sang tiếng Việt chuẩn TikTok:\n"
         f"{json.dumps(input_data, ensure_ascii=False, indent=2)}\n\n"
         f"Xuất JSON: {{\"translations\": [{{\"position\": 0, \"translatedTextVi\": \"...\"}}]}}"
@@ -153,7 +219,9 @@ from gemini_pool import gemini_pool
 def translate_with_gemini(
     segments: List[Dict[str, Any]],
     api_key: Optional[str] = None,
-    model: str = "gemini-flash-lite-latest"
+    model: str = "gemini-flash-lite-latest",
+    channel_profile: Optional[str] = None,
+    cta_type: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """Dịch các đoạn thoại bằng Google Gemini với khả năng xoay tua key thông minh."""
     models_to_try = [model, "gemini-flash-lite-latest", "gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash"]
@@ -174,7 +242,10 @@ def translate_with_gemini(
             success = False
             for m in unique_models:
                 try:
-                    trans_map = translate_with_gemini_single_chunk(chunk_segs, chunk_start, active_key, model=m)
+                    trans_map = translate_with_gemini_single_chunk(
+                        chunk_segs, chunk_start, active_key,
+                        model=m, channel_profile=channel_profile, cta_type=cta_type
+                    )
                     if trans_map:
                         success = True
                         break
@@ -254,7 +325,9 @@ def translate_segments_native(
     provider: str = "gemini",
     gemini_key: Optional[str] = None,
     deepseek_key: Optional[str] = None,
-    openai_key: Optional[str] = None
+    openai_key: Optional[str] = None,
+    channel_profile: Optional[str] = None,
+    cta_type: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """Điểm vào chính: Chuyển ngữ bản xứ bằng LLM với cơ chế xoay tua Gemini Key Pool 100% khi gặp 429."""
     if not segments:
@@ -264,7 +337,12 @@ def translate_segments_native(
     if (provider == "gemini" or not deepseek_key) and (gemini_key or gemini_pool.keys):
         try:
             logger.info("Chuyển ngữ kịch bản bằng Gemini AI (Key Pool Rotation)...")
-            segments = translate_with_gemini(segments, gemini_key, model="gemini-flash-lite-latest")
+            segments = translate_with_gemini(
+                segments, gemini_key,
+                model="gemini-flash-lite-latest",
+                channel_profile=channel_profile,
+                cta_type=cta_type
+            )
         except Exception as exc:
             logger.warning(f"Lỗi khi gọi Gemini API ({exc})...")
 
@@ -306,9 +384,10 @@ def translate_segments_native(
 
 def generate_viral_hooks(
     segments: List[Dict[str, Any]],
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    channel_profile: Optional[str] = None
 ) -> List[Dict[str, str]]:
-    """Tự động phân tích bối cảnh toàn bộ video và sinh ra 3 biến thể Hook 3s đầu siêu bén (High-Retention TikTok Hooks)."""
+    """Tự động phân tích bối cảnh toàn bộ video và sinh ra 8 biến thể Hook 3s đầu siêu bén theo Persona kênh."""
     if not segments:
         return []
     
@@ -323,7 +402,15 @@ def generate_viral_hooks(
             context_lines.append(t)
     context_text = " | ".join(context_lines)
     
-    prompt = f"""Bạn là bậc thầy sáng tạo Hook triệu view trên TikTok/Reels Việt Nam (chuyên gia tạo Khoảng Trống Tò Mò trong 3 giây đầu tiên).
+    persona_key = "page_giai_cuu_chuong_lon"
+    if channel_profile:
+        cleaned = channel_profile.lower().replace(" ", "_").replace("-", "_")
+        if "goc_tro" in cleaned or "bat_on" in cleaned:
+            persona_key = "page_goc_tro_bat_on"
+            
+    persona_desc = PAGE_PERSONAS[persona_key]["name"]
+    
+    prompt = f"""Bạn là bậc thầy sáng tạo Hook triệu view trên TikTok/Reels Việt Nam cho kênh: {persona_desc}.
 Dựa vào bối cảnh toàn bộ video sau đây:
 \"\"\"{context_text}\"\"\"
 

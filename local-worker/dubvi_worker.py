@@ -97,6 +97,100 @@ class Settings:
         )
 
 
+CHANNEL_DEFAULTS = {
+    "page_giai_cuu_chuong_lon": {
+        "channel_name": "Giải Cứu Chuồng Lợn",
+        "default_voice": "BV421_vivn_streaming",
+        "style_tag": "🐷 Before-After / Review Gia Dụng",
+        "color": "#FFE600",  # Vàng Douyin
+    },
+    "page_goc_tro_bat_on": {
+        "channel_name": "Góc Trọ Bất Ổn",
+        "default_voice": "BV007_streaming",
+        "style_tag": "🏠 Drama KTX / Ở Chung",
+        "color": "#00FFFF",  # Xanh Cyan Drama
+    }
+}
+
+
+def scan_multi_channel_raw(base_dirs: list[Path] | None = None) -> list[dict[str, Any]]:
+    """Quét đa kênh tự động từ Giai đoạn 1 (video reup raw/...) và đọc file .meta.json tương ứng."""
+    if base_dirs is None:
+        base_dirs = [
+            Path(r"C:\Users\vmath\Downloads\douyinnnnnnnnnnn\video reup raw"),
+            Path(r"C:\Users\vmath\Videos\douyin"),
+            Path(r"C:\Users\vmath\Downloads\video douyin raw"),
+            Path(r"C:\Users\vmath\Downloads")
+        ]
+        
+    discovered: list[dict[str, Any]] = []
+    seen = set()
+    
+    for base in base_dirs:
+        if not base.is_dir():
+            continue
+        for p in list(base.rglob("*.mp4")) + list(base.rglob("*.mov")) + list(base.rglob("*.mkv")):
+            if not p.is_file() or p.name.startswith("_") or str(p.resolve()) in seen:
+                continue
+            seen.add(str(p.resolve()))
+            
+            meta_data: dict[str, Any] = {}
+            # 1. Tìm file companion .meta.json cùng tên (VD: processed_1_tiktok.meta.json)
+            meta_path = p.parent / f"{p.stem}.meta.json"
+            if meta_path.is_file():
+                try:
+                    meta_data = json.loads(meta_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            elif p.name.startswith("processed_"):
+                alt_meta = p.parent / f"{p.name}.meta.json"
+                if alt_meta.is_file():
+                    try:
+                        meta_data = json.loads(alt_meta.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+                        
+            channel_profile = meta_data.get("channel_profile") or p.parent.name
+            target_platform = meta_data.get("target_platform") or "tiktok"
+            vpdq_status = meta_data.get("vpdq_status") or ("PASSED" if meta_data.get("vpdq_similarity_percent") else "UNKNOWN")
+            
+            # Gán style kịch bản và giọng đọc mặc định theo kênh
+            cleaned_channel = channel_profile.lower().replace(" ", "_").replace("-", "_")
+            if "chuong_lon" in cleaned_channel or "giai_cuu" in cleaned_channel:
+                cfg = CHANNEL_DEFAULTS["page_giai_cuu_chuong_lon"]
+            elif "goc_tro" in cleaned_channel or "bat_on" in cleaned_channel:
+                cfg = CHANNEL_DEFAULTS["page_goc_tro_bat_on"]
+            else:
+                cfg = {
+                    "channel_name": channel_profile,
+                    "default_voice": "BV421_vivn_streaming",
+                    "style_tag": "🎬 Review Đời Thường",
+                    "color": "#FFFFFF"
+                }
+                
+            discovered.append({
+                "video_path": p,
+                "video_name": p.name,
+                "parent_dir": p.parent.name,
+                "channel_profile": channel_profile,
+                "channel_name": cfg["channel_name"],
+                "target_platform": target_platform,
+                "vpdq_status": vpdq_status,
+                "vpdq_similarity": meta_data.get("vpdq_similarity_percent"),
+                "zoom_factor": meta_data.get("zoom_factor"),
+                "duration_seconds": meta_data.get("duration_seconds"),
+                "default_voice": cfg["default_voice"],
+                "style_tag": cfg["style_tag"],
+                "color": cfg["color"],
+                "size_mb": round(p.stat().st_size / (1024 * 1024), 1),
+                "mtime": p.stat().st_mtime,
+                "has_meta": bool(meta_data)
+            })
+            
+    discovered.sort(key=lambda x: x["mtime"], reverse=True)
+    return discovered
+
+
 def setup_logging(settings: Settings) -> logging.Logger:
     logger = logging.getLogger("dubvi-worker")
     logger.setLevel(logging.INFO)
