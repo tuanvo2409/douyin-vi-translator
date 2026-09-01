@@ -634,8 +634,12 @@ def main_page():
             "-c:v", "libx264", "-preset", "ultrafast", str(preview_out)
         ]
         
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: subprocess.run(cmd, check=True))
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
         
         preview_url = get_http_video_url(preview_out)
         video_player.set_source(preview_url)

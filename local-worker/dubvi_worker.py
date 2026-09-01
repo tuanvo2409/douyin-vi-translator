@@ -203,10 +203,11 @@ def transcribe(audio_path: Path, model_name: str, device: str) -> list[dict[str,
         )
     model = _whisper_model
     # beam_size=1 (greedy) nhanh hơn ~2x so với beam_size=5 mặc định, đủ dùng với model tiny
+    # vad_filter=False: Ngăn Silero VAD nuốt nhầm câu thoại khi có nhạc nền BGM
     parts, _ = model.transcribe(
         str(audio_path),
         language="zh",
-        vad_filter=True,
+        vad_filter=False,
         word_timestamps=True,
         beam_size=1,
     )
