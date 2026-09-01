@@ -255,13 +255,26 @@ def main_page():
                         on_click=lambda: preview_3s_mask()
                     ).classes("w-full bg-indigo-600/60 hover:bg-indigo-600 text-white font-bold py-1.5 rounded-lg shadow text-xs transition-all")
 
-            # NÚT ACTION 1-CLICK Ở CUỐI CÙNG
-            with ui.column().classes("w-full pt-2"):
+            # KHU VỰC NÚT ĐIỀU KHIỂN RENDER (2 BƯỚC HOẶC 1-CLICK)
+            with ui.column().classes("w-full pt-1.5 gap-1.5"):
+                with ui.row().classes("w-full gap-1.5 no-wrap"):
+                    btn_step1 = ui.button(
+                        "1. Dịch & Hook",
+                        icon="translate",
+                        on_click=lambda: run_transcribe_and_translate()
+                    ).classes("w-1/2 bg-slate-800 hover:bg-slate-700 text-indigo-300 font-bold py-2 rounded-xl border border-indigo-500/30 text-[11px] shadow")
+                    
+                    btn_step2 = ui.button(
+                        "2. Render 1080p",
+                        icon="movie_creation",
+                        on_click=lambda: run_tts_and_render()
+                    ).classes("w-1/2 bg-slate-800 hover:bg-slate-700 text-emerald-300 font-bold py-2 rounded-xl border border-emerald-500/30 text-[11px] shadow")
+
                 btn_auto_all = ui.button(
                     "🚀 1-CLICK TỰ ĐỘNG TOÀN BỘ",
                     icon="bolt",
                     on_click=lambda: run_full_pipeline()
-                ).classes("w-full bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 hover:opacity-95 text-white font-black py-3 rounded-xl shadow-xl text-xs tracking-wider uppercase transition-all")
+                ).classes("w-full bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 hover:opacity-95 text-white font-black py-2.5 rounded-xl shadow-xl text-xs tracking-wider uppercase transition-all")
 
         # ----------------------------------------------------
         # CỘT 2: Bảng Kịch Bản Song Ngữ AG Grid (Width: 46%)
@@ -810,7 +823,6 @@ def main_page():
         push_log("🧠 Đang gọi Google Gemini 2.5 Flash chuyển ngữ kịch bản...")
         for s in segs:
             s["sourceTextZh"] = s.get("asrTextZh", "")
-
         segs = await loop.run_in_executor(
             None, translate_segments_native, segs, "gemini"
         )
@@ -850,147 +862,159 @@ def main_page():
         ui.notify("Đã dịch xong kịch bản & gợi ý Hook 3s!", type="positive")
 
     async def run_tts_and_render():
-        if not state["segments"]:
-            ui.notify("Chưa có kịch bản! Hãy bấm '1. Bóc Tách & Dịch AI' trước.", type="warning")
-            return
-        source = state["selected_video"]
-        job_dir = DEFAULT_OUT_DIR / f"{source.stem}-full"
-        clean_bgm_wav = job_dir / "clean_bgm.wav"
-
-        progress_bar.set_value(0.6)
-        current_step_label.set_text(f"3/4: Đang sinh {len(state['segments'])} giọng đọc CapCut...")
-        push_log(f"🎙️ Đang tổng hợp {len(state['segments'])} giọng đọc CapCut TikTok...")
-
-        loop = asyncio.get_event_loop()
-        
-        def gen_voice(item):
-            idx, seg = item
-            raw_v = job_dir / f"voice_{idx:03d}_raw.mp3"
-            fit_v = job_dir / f"voice_{idx:03d}.mp3"
-            slot_ms = seg["endMs"] - seg["startMs"]
-            vi_text = seg.get("translatedTextVi") or seg.get("sourceTextZh") or "..."
-            
-            # Kiểm tra xem file voice đã có sẵn chưa
-            if not fit_v.is_file() or fit_v.stat().st_size < 100:
-                synthesize(vi_text, state["selected_voice"], raw_v, settings)
-                fit_ms, _ = fit_voice(raw_v, fit_v, slot_ms, max_tempo=1.35)
-            else:
-                fit_ms = slot_ms
-
-            seg["voicePath"] = str(fit_v)
-            seg["voiceDurationMs"] = fit_ms
-            seg["endMs"] = seg["startMs"] + fit_ms
-            return idx, fit_v, seg["startMs"]
-
-        with ThreadPoolExecutor(max_workers=5) as ex:
-            results = await loop.run_in_executor(None, lambda: list(ex.map(gen_voice, enumerate(state["segments"]))))
-
-        results.sort(key=lambda x: x[0])
-        voice_inputs = [(r[1], r[2]) for r in results]
-        push_log(f"✓ Đã sinh xong {len(voice_inputs)} file voice CapCut đồng bộ.")
-
-        progress_bar.set_value(0.8)
-        current_step_label.set_text("4/4: Đang render video Full HD 1080p Kính Mờ...")
-        push_log("🎞️ Đang render FFmpeg 1080p Full HD với hiệu ứng Kính Mờ...")
-
-        # Render 1080p MP4
-        roi = state.get("roi") or {"xPercent": 2.0, "yPercent": 66.0, "widthPercent": 96.0, "heightPercent": 9.8}
-        ass_path = job_dir / f"{source.stem}_1080p.ass"
-        srt_path = job_dir / f"{source.stem}_1080p.srt"
-        draw_ass(
-            state["segments"], 1080, 1920, roi, ass_path,
-            font_name=state["font_name"], font_size=state["font_size"],
-            font_color=state["font_color"]
-        )
-        draw_srt(state["segments"], srt_path)
-
-        out_mp4 = job_dir / f"{source.stem}_1080p_master_vi.mp4"
-        
-        # FFmpeg call with dynamic AI-detected ROI
-        w_px = int(1080 * (roi["widthPercent"] / 100.0))
-        h_px = int(1920 * (roi["heightPercent"] / 100.0))
-        x_px = int(1080 * (roi["xPercent"] / 100.0))
-        y_px = int(1920 * (roi["yPercent"] / 100.0))
-        ass_posix = ass_path.as_posix()
-        if len(ass_posix) >= 2 and ass_posix[1] == ":":
-            ass_posix = ass_posix[0] + "\\:" + ass_posix[2:]
-
-        # Gom các câu thoại liên tục thành các khối thời gian cố định (loại bỏ nhấp nháy, chỉ tắt khi nghỉ >= 1.8s)
-        if state["segments"]:
-            blocks = compute_mask_intervals(state["segments"], max_gap_s=1.8, padding_s=0.15)
-            active_intervals = [f"between(t,{st},{et})" for st, et in blocks]
-        else:
-            active_intervals = []
-
-        if active_intervals:
-            enable_filter = f":enable='{'+'.join(active_intervals)}'"
-        else:
-            enable_filter = ":enable='0'"
-
-        video_filter = (
-            f"[0:v]scale=1080:1920,split=2[base][ref];"
-            f"[ref]crop={w_px}:{h_px}:{x_px}:{y_px},boxblur=24:3:24:3,drawbox=x=0:y=0:w={w_px}:h={h_px}:color=white@0.14:t=fill[blur];"
-            f"[base][blur]overlay={x_px}:{y_px}{enable_filter},subtitles='{ass_posix}'[video]"
-        )
-
-        has_clean_bgm = clean_bgm_wav.is_file()
-        if has_clean_bgm:
-            cmd = ["ffmpeg", "-y", "-i", str(source), "-i", str(clean_bgm_wav)]
-            audio_offset = 2
-        else:
-            cmd = ["ffmpeg", "-y", "-i", str(source)]
-            audio_offset = 1
-
-        audio_labels = []
-        for idx, (voice_path, offset_ms) in enumerate(voice_inputs, start=1):
-            cmd.extend(["-i", str(voice_path)])
-            input_idx = idx + audio_offset - 1
-            audio_labels.append(f"[{input_idx}:a]adelay={offset_ms}|{offset_ms}[v{idx}]")
-
-        all_v_tags = "".join(f"[v{i}]" for i in range(1, len(voice_inputs) + 1))
-        mix_voice = f"{';'.join(audio_labels)};{all_v_tags}amix=inputs={len(voice_inputs)}:duration=longest:normalize=0[allvoice]"
-        
-        if has_clean_bgm:
-            audio_filter = f"{mix_voice};[1:a]volume=0.85[bgm];[bgm][allvoice]amix=inputs=2:duration=first:normalize=0[finalaudio]"
-        else:
-            audio_filter = f"{mix_voice};[0:a]volume=0.22[bgm];[bgm][allvoice]amix=inputs=2:duration=first:normalize=0[finalaudio]"
-
-        full_cmd = cmd + [
-            "-filter_complex", f"{video_filter};{audio_filter}",
-            "-map", "[video]", "-map", "[finalaudio]",
-            "-threads", "4",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-c:a", "aac", "-shortest", "-movflags", "+faststart", str(out_mp4)
-        ]
-        
-        # Chạy FFmpeg Native Async Subprocess - Hoàn toàn không chặn WebSocket của NiceGUI
-        proc = await asyncio.create_subprocess_exec(
-            *full_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await proc.communicate()
-        
-        state["current_master_mp4"] = out_mp4
-        master_url = get_http_video_url(out_mp4)
-        push_log(f"🎉 RENDER THÀNH CÔNG: {out_mp4.name} ({out_mp4.stat().st_size/1024/1024:.2f} MB)")
-        push_log("🎬 Đã nạp Video Master 1080p lên Player!")
         try:
-            progress_bar.set_value(1.0)
-            current_step_label.set_text("🎉 HOÀN TẤT XUẤT VIDEO 1080P MASTER!")
-            video_player.set_source(master_url)
-            current_video_title.set_text(source.name)
-            video_status_badge.set_text("✅ ĐÃ RENDER")
-            video_status_badge.props("color=emerald")
-            res_badge.set_text("1080p Master")
-            res_badge.props("color=emerald")
-            btn_auto_all.set_text("🔄 RENDER LẠI (NẾU SỬA KỊCH BẢN)")
-            refresh_video_list()
-            ui.notify("Đã render xong Video 1080p Master!", type="positive")
-        except Exception:
-            pass
+            if not state.get("selected_video"):
+                ui.notify("Vui lòng chọn video trước!", type="warning")
+                return
+            if not state.get("segments"):
+                ui.notify("Chưa có kịch bản! Hãy bấm '1. Dịch & Hook' trước.", type="warning")
+                return
+            source = state["selected_video"]
+            job_dir = DEFAULT_OUT_DIR / f"{source.stem}-full"
+            clean_bgm_wav = job_dir / "clean_bgm.wav"
+
+            progress_bar.set_value(0.6)
+            current_step_label.set_text(f"3/4: Đang sinh {len(state['segments'])} giọng đọc CapCut...")
+            push_log(f"🎙️ Đang tổng hợp {len(state['segments'])} giọng đọc CapCut TikTok...")
+
+            loop = asyncio.get_event_loop()
+            
+            def gen_voice(item):
+                idx, seg = item
+                raw_v = job_dir / f"voice_{idx:03d}_raw.mp3"
+                fit_v = job_dir / f"voice_{idx:03d}.mp3"
+                slot_ms = max(800, seg.get("endMs", 0) - seg.get("startMs", 0))
+                vi_text = (seg.get("translatedTextVi") or seg.get("sourceTextZh") or "...").strip()
+                
+                # Kiểm tra xem file voice đã có sẵn chưa
+                if not fit_v.is_file() or fit_v.stat().st_size < 100:
+                    try:
+                        synthesize(vi_text, state["selected_voice"], raw_v, settings)
+                        fit_ms, _ = fit_voice(raw_v, fit_v, slot_ms, max_tempo=1.35)
+                    except Exception as ex:
+                        logging.getLogger("dubvi-worker").warning(f"Voice {idx} error: {ex}")
+                        fit_ms = slot_ms
+                else:
+                    fit_ms = slot_ms
+
+                seg["voicePath"] = str(fit_v)
+                seg["voiceDurationMs"] = fit_ms
+                seg["endMs"] = seg["startMs"] + fit_ms
+                return idx, fit_v, seg["startMs"]
+
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                results = await loop.run_in_executor(None, lambda: list(ex.map(gen_voice, enumerate(state["segments"]))))
+
+            results.sort(key=lambda x: x[0])
+            voice_inputs = [(r[1], r[2]) for r in results if r[1].is_file()]
+            push_log(f"✓ Đã sinh xong {len(voice_inputs)} file voice CapCut đồng bộ.")
+
+            progress_bar.set_value(0.8)
+            current_step_label.set_text("4/4: Đang render video Full HD 1080p Kính Mờ...")
+            push_log("🎞️ Đang render FFmpeg 1080p Full HD với hiệu ứng Kính Mờ...")
+
+            # Render 1080p MP4
+            roi = state.get("roi") or {"xPercent": 2.0, "yPercent": 66.0, "widthPercent": 96.0, "heightPercent": 9.8}
+            ass_path = job_dir / f"{source.stem}_1080p.ass"
+            srt_path = job_dir / f"{source.stem}_1080p.srt"
+            draw_ass(
+                state["segments"], 1080, 1920, roi, ass_path,
+                font_name=state["font_name"], font_size=state["font_size"],
+                font_color=state["font_color"]
+            )
+            draw_srt(state["segments"], srt_path)
+
+            out_mp4 = job_dir / f"{source.stem}_1080p_master_vi.mp4"
+            
+            # FFmpeg call with dynamic AI-detected ROI
+            w_px = int(1080 * (roi["widthPercent"] / 100.0))
+            h_px = int(1920 * (roi["heightPercent"] / 100.0))
+            x_px = int(1080 * (roi["xPercent"] / 100.0))
+            y_px = int(1920 * (roi["yPercent"] / 100.0))
+            ass_posix = ass_path.as_posix()
+            if len(ass_posix) >= 2 and ass_posix[1] == ":":
+                ass_posix = ass_posix[0] + "\\:" + ass_posix[2:]
+
+            # Gom các câu thoại liên tục thành các khối thời gian cố định (loại bỏ nhấp nháy, chỉ tắt khi nghỉ >= 1.8s)
+            if state["segments"]:
+                blocks = compute_mask_intervals(state["segments"], max_gap_s=1.8, padding_s=0.15)
+                active_intervals = [f"between(t,{st},{et})" for st, et in blocks]
+            else:
+                active_intervals = []
+
+            if active_intervals:
+                enable_filter = f":enable='{'+'.join(active_intervals)}'"
+            else:
+                enable_filter = ":enable='0'"
+
+            video_filter = (
+                f"[0:v]scale=1080:1920,split=2[base][ref];"
+                f"[ref]crop={w_px}:{h_px}:{x_px}:{y_px},boxblur=24:3:24:3,drawbox=x=0:y=0:w={w_px}:h={h_px}:color=white@0.14:t=fill[blur];"
+                f"[base][blur]overlay={x_px}:{y_px}{enable_filter},subtitles='{ass_posix}'[video]"
+            )
+
+            has_clean_bgm = clean_bgm_wav.is_file()
+            if has_clean_bgm:
+                cmd = ["ffmpeg", "-y", "-i", str(source), "-i", str(clean_bgm_wav)]
+                audio_offset = 2
+            else:
+                cmd = ["ffmpeg", "-y", "-i", str(source)]
+                audio_offset = 1
+
+            audio_labels = []
+            for idx, (voice_path, offset_ms) in enumerate(voice_inputs, start=1):
+                cmd.extend(["-i", str(voice_path)])
+                input_idx = idx + audio_offset - 1
+                audio_labels.append(f"[{input_idx}:a]adelay={offset_ms}|{offset_ms}[v{idx}]")
+
+            all_v_tags = "".join(f"[v{i}]" for i in range(1, len(voice_inputs) + 1))
+            mix_voice = f"{';'.join(audio_labels)};{all_v_tags}amix=inputs={len(voice_inputs)}:duration=longest:normalize=0[allvoice]"
+            
+            if has_clean_bgm:
+                audio_filter = f"{mix_voice};[1:a]volume=0.85[bgm];[bgm][allvoice]amix=inputs=2:duration=first:normalize=0[finalaudio]"
+            else:
+                audio_filter = f"{mix_voice};[0:a]volume=0.22[bgm];[bgm][allvoice]amix=inputs=2:duration=first:normalize=0[finalaudio]"
+
+            full_cmd = cmd + [
+                "-filter_complex", f"{video_filter};{audio_filter}",
+                "-map", "[video]", "-map", "[finalaudio]",
+                "-threads", "4",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-c:a", "aac", "-shortest", "-movflags", "+faststart", str(out_mp4)
+            ]
+            
+            # Chạy FFmpeg Native Async Subprocess - Hoàn toàn không chặn WebSocket của NiceGUI
+            proc = await asyncio.create_subprocess_exec(
+                *full_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await proc.communicate()
+            
+            state["current_master_mp4"] = out_mp4
+            master_url = get_http_video_url(out_mp4)
+            push_log(f"🎉 RENDER THÀNH CÔNG: {out_mp4.name} ({out_mp4.stat().st_size/1024/1024:.2f} MB)")
+            push_log("🎬 Đã nạp Video Master 1080p lên Player!")
+            try:
+                progress_bar.set_value(1.0)
+                current_step_label.set_text("🎉 HOÀN TẤT XUẤT VIDEO 1080P MASTER!")
+                video_player.set_source(master_url)
+                current_video_title.set_text(source.name)
+                video_status_badge.set_text("✅ ĐÃ RENDER")
+                video_status_badge.props("color=emerald")
+                res_badge.set_text("1080p Master")
+                res_badge.props("color=emerald")
+                btn_auto_all.set_text("🔄 RENDER LẠI (NẾU SỬA KỊCH BẢN)")
+                refresh_video_list()
+                ui.notify("Đã render xong Video 1080p Master!", type="positive")
+            except Exception:
+                pass
+        except Exception as exc:
+            push_log(f"❌ LỖI RENDER: {exc}")
+            ui.notify(f"Lỗi Render: {exc}", type="negative")
 
     async def run_full_pipeline():
+        push_log("🚀 BẮT ĐẦU QUY TRÌNH 1-CLICK TỰ ĐỘNG TOÀN BỘ...")
         await run_transcribe_and_translate()
         await run_tts_and_render()
 
