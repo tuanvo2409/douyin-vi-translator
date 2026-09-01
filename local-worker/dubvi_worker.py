@@ -547,30 +547,64 @@ def fit_voice(source_audio: Path, target_audio: Path, slot_ms: int, max_tempo: f
     return int(ffprobe_duration(target_audio) * 1000), False
 
 
-def hex_to_ass_color(hex_code: str) -> str:
-    """Chuyển mã màu HEX #RRGGBB sang định dạng ASS BGR &H00BBGGRR."""
-    hex_code = hex_code.lstrip('#')
-    if len(hex_code) == 6:
-        r, g, b = hex_code[0:2], hex_code[2:4], hex_code[4:6]
-        return f"&H00{b}{g}{r}"
-    return "&H00FFFFFF"
+def round_rect_ass(w: int, h: int, r: int = 20) -> str:
+    """Tạo ASS Vector path cho hình chữ nhật bo tròn từ (0, 0) đến (w, h)."""
+    r = min(r, w // 2, h // 2)
+    k = int(r * 0.55228)
+    return (
+        f"m {r} 0 "
+        f"l {w - r} 0 "
+        f"b {w - r + k} 0 {w} {r - k} {w} {r} "
+        f"l {w} {h - r} "
+        f"b {w} {h - r + k} {w - r + k} {h} {w - r} {h} "
+        f"l {r} {h} "
+        f"b {r - k} {h} 0 {h - r + k} 0 {h - r} "
+        f"l 0 {r} "
+        f"b 0 {r - k} {r - k} 0 {r} 0"
+    )
 
 
-def wrap_subtitle_text(text: str, max_chars: int = 24) -> str:
-    """Tự động ngắt dòng cân đối tối đa 2 dòng, tránh phụ đề phình to tràn khỏi kính mờ."""
-    words = text.split()
-    if len(text) <= max_chars or len(words) <= 3:
-        return text
-    best_split = len(words) // 2
-    best_diff = 999
-    for i in range(1, len(words)):
-        l1 = " ".join(words[:i])
-        l2 = " ".join(words[i:])
-        diff = abs(len(l1) - len(l2))
-        if diff < best_diff:
-            best_diff = diff
-            best_split = i
-    return " ".join(words[:best_split]) + r"\N" + " ".join(words[best_split:])
+def clamp_and_bridge_audio_gaps(
+    audio_clips: list[dict[str, Any]],
+    max_gap_ms: int = 600,
+    min_pause_ms: int = 250
+) -> list[dict[str, Any]]:
+    """
+    THUẬT TOÁN SMART GAP CLAMPING & PACING:
+    Khống chế mọi khoảng câm giữa 2 câu thoại không vượt quá max_gap_ms (mặc định 600ms = 0.6s).
+    Tự động tịnh tiến timeline câu kế tiếp về khoảng nghỉ tự nhiên 300-450ms.
+    """
+    if not audio_clips:
+        return []
+
+    adjusted_clips = []
+    for i, clip in enumerate(audio_clips):
+        c_copy = dict(clip)
+        dur_sec = max(0.2, c_copy.get("durationSec") or (c_copy.get("voiceDurationMs", 1000) / 1000.0))
+        c_copy["durationSec"] = dur_sec
+        
+        if i == 0:
+            c_copy["startMs"] = 0
+            c_copy["endMs"] = int(dur_sec * 1000)
+            adjusted_clips.append(c_copy)
+            continue
+
+        prev = adjusted_clips[-1]
+        prev_end_speech_ms = prev["startMs"] + int(prev["durationSec"] * 1000)
+        current_raw_start = c_copy["startMs"]
+        gap = current_raw_start - prev_end_speech_ms
+
+        if gap > max_gap_ms:
+            new_start = prev_end_speech_ms + min(gap, 450)
+            c_copy["startMs"] = new_start
+            c_copy["endMs"] = new_start + int(dur_sec * 1000)
+        elif gap < min_pause_ms:
+            new_start = prev_end_speech_ms + min_pause_ms
+            c_copy["startMs"] = new_start
+            c_copy["endMs"] = new_start + int(dur_sec * 1000)
+
+        adjusted_clips.append(c_copy)
+    return adjusted_clips
 
 
 def draw_ass(
@@ -579,50 +613,67 @@ def draw_ass(
     video_height: int,
     roi: dict[str, Any],
     path: Path,
-    font_name: str = "Arial",
+    font_name: str = "Segoe UI",
     font_size: int | None = None,
-    font_color: str = "#FFFF00"
+    font_color: str = "#111111"
 ) -> None:
-    """Vẽ phụ đề ASS chuẩn 1080p, căn giữa hoàn hảo bên trong Kính Mờ (không bao giờ tràn ra ngoài)."""
-    # Luôn chuẩn hóa theo độ phân giải xuất 1080p (1080x1920 hoặc 1920x1080)
+    """Vẽ phụ đề ASS Thẻ Trắng Bo Góc Đơn (Single White Pill Subtitle Card) chuẩn 1080p."""
     if video_height >= video_width:
         target_w, target_h = 1080, 1920
     else:
         target_w, target_h = 1920, 1080
 
-    actual_font_size = font_size if font_size else 44
-    ass_color = hex_to_ass_color(font_color)
-    center_y = int(target_h * (roi.get("yPercent", 65.0) + roi.get("heightPercent", 14.0) / 2.0) / 100)
+    center_x = target_w // 2
+    actual_font_size = font_size if font_size else 48
+    
+    # Tính tâm Y theo ROI hoặc mặc định 70%
+    if roi and "yPercent" in roi:
+        center_y = int(target_h * (roi.get("yPercent", 65.0) + roi.get("heightPercent", 10.0) / 2.0) / 100)
+    else:
+        center_y = int(target_h * 0.70)
 
     lines = [
         "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {target_w}", f"PlayResY: {target_h}",
-        "[V4+ Styles]", "Format: Name,Fontname,Fontsize,PrimaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
-        f"Style: Vietnamese,{font_name},{actual_font_size},{ass_color},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3.2,1.2,2,40,40,10,1",
-        "[Events]", "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        "Style: CleanWhiteBox,Arial,10,&H00FFFFFF,&H00000000,&H00FFFFFF,&H00FFFFFF,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1",
+        f"Style: CleanBlackText,{font_name},{actual_font_size},&H00111111,&H00000000,&H00FFFFFF,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1",
+        "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
     ]
 
-    for segment in segments:
-        start = int(segment["startMs"])
-        end = int(segment["endMs"])
+    def ass_time(value_ms: int) -> str:
+        hours, remainder = divmod(value_ms, 3_600_000)
+        minutes, remainder = divmod(remainder, 60_000)
+        seconds, milliseconds = divmod(remainder, 1000)
+        return f"{hours}:{minutes:02d}:{seconds:02d}.{milliseconds // 10:02d}"
 
-        def ass_time(value: int) -> str:
-            hours, remainder = divmod(value, 3_600_000)
-            minutes, remainder = divmod(remainder, 60_000)
-            seconds, milliseconds = divmod(remainder, 1000)
-            return f"{hours}:{minutes:02d}:{seconds:02d}.{milliseconds // 10:02d}"
+    for seg in segments:
+        st_ms = int(seg.get("startMs", 0))
+        et_ms = int(seg.get("endMs", st_ms + 1500))
+        vi_txt = seg.get("translatedTextVi", "").strip()
+        if not vi_txt:
+            continue
 
-        raw_text = segment.get("translatedTextVi") or ""
-        wrapped_text = wrap_subtitle_text(raw_text, max_chars=24)
-        is_multiline = r"\N" in wrapped_text
-
-        # Căn chỉnh MarginV từng dòng để tâm chữ luôn khớp chính xác vào tâm Kính Mờ
-        if is_multiline:
-            line_margin_v = max(10, int(target_h - center_y - actual_font_size * 0.95))
+        words = vi_txt.split()
+        if len(vi_txt) > 22 and len(words) > 3:
+            mid = len(words) // 2
+            formatted_vi = " ".join(words[:mid]) + r"\N" + " ".join(words[mid:])
+            num_lines = 2
+            max_line_len = max(len(" ".join(words[:mid])), len(" ".join(words[mid:])))
         else:
-            line_margin_v = max(10, int(target_h - center_y - actual_font_size * 0.45))
+            formatted_vi = vi_txt
+            num_lines = 1
+            max_line_len = len(vi_txt)
 
-        clean_text = wrapped_text.replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
-        lines.append(f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Vietnamese,,0,0,{line_margin_v},,{clean_text}")
+        box_w = max(950, int(max_line_len * actual_font_size * 0.58 + 80))
+        box_h = 135 if num_lines == 1 else 158
+
+        st_str = ass_time(st_ms)
+        et_str = ass_time(et_ms)
+
+        clean_text = formatted_vi.replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
+        lines.append(f"Dialogue: 0,{st_str},{et_str},CleanWhiteBox,,0,0,0,,{{\\pos({center_x},{center_y})\\p1}}{round_rect_ass(box_w, box_h, r=20)}{{\\p0}}")
+        lines.append(f"Dialogue: 1,{st_str},{et_str},CleanBlackText,,0,0,0,,{{\\pos({center_x},{center_y})}}{clean_text}")
 
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -645,46 +696,13 @@ def ffprobe_dimensions(source: Path) -> tuple[int, int]:
     return int(width), int(height)
 
 
-def compute_mask_intervals(
-    segments: list[dict[str, Any]],
-    mask_only_intervals: list[tuple[float, float]] | None = None,
-    max_gap_s: float = 1.8,
-    padding_s: float = 0.15
-) -> list[tuple[float, float]]:
-    """
-    Gom các câu thoại và các đoạn sub câm/ngắn thành các khối thời gian hiển thị Mask cố định.
-    Chỉ tắt mask khi hoàn toàn không có sub hoặc khoảng cách giữa 2 sub thực sự dài (>= 1.8s).
-    """
-    raw_intervals = []
-    if segments:
-        for seg in segments:
-            has_text = bool((seg.get("sourceTextZh") or seg.get("ocrTextZh") or seg.get("asrTextZh") or "").strip()) or bool(seg.get("translatedTextVi", "").strip())
-            if has_text and seg.get("endMs", 0) > seg.get("startMs", 0):
-                st = max(0.0, seg["startMs"] / 1000.0)
-                et = max(st, seg["endMs"] / 1000.0)
-                raw_intervals.append((st, et))
-
-    if mask_only_intervals:
-        for st, et in mask_only_intervals:
-            if et > st:
-                raw_intervals.append((max(0.0, float(st)), float(et)))
-
-    if not raw_intervals:
-        return []
-
-    raw_intervals.sort(key=lambda x: x[0])
-    merged = []
-    cur_start, cur_end = raw_intervals[0]
-
-    for next_st, next_et in raw_intervals[1:]:
-        if next_st - cur_end <= max_gap_s:
-            cur_end = max(cur_end, next_et)
-        else:
-            merged.append((round(max(0.0, cur_start - padding_s), 2), round(cur_end + padding_s, 2)))
-            cur_start, cur_end = next_st, next_et
-
-    merged.append((round(max(0.0, cur_start - padding_s), 2), round(cur_end + padding_s, 2)))
-    return merged
+def ffprobe_has_audio(source: Path) -> bool:
+    """Kiểm tra video gốc có chứa luồng âm thanh (audio stream) hay không."""
+    try:
+        res = run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(source)])
+        return bool(res.stdout.strip())
+    except Exception:
+        return False
 
 
 def render_video(
@@ -695,51 +713,22 @@ def render_video(
     roi: dict[str, Any],
     audio_mode: str,
     clean_bgm_path: Path | None = None,
-    segments: list[dict[str, Any]] | None = None,
-    mask_only_intervals: list[tuple[float, float]] | None = None
+    **kwargs: Any
 ) -> None:
+    """Render video Master 1080p với Thẻ Trắng Bo Góc Đơn (Single White Pill) và hòa âm LUFS -14dB."""
     orig_w, orig_h = ffprobe_dimensions(source)
     
     # Chuẩn hóa độ phân giải xuất ra Full HD 1080p (Chuẩn TikTok/Reels/Shorts)
-    # Nếu video dọc (height > width): 1080x1920. Nếu video ngang: 1920x1080.
     if orig_h >= orig_w:
-        target_w, target_h = 1080, 1920
         scale_filter = "scale=1080:1920"
     else:
-        target_w, target_h = 1920, 1080
         scale_filter = "scale=1920:1080"
 
-    x = int(target_w * roi.get("xPercent", 2.0) / 100)
-    y = int(target_h * roi.get("yPercent", 66.0) / 100)
-    w = int(target_w * roi.get("widthPercent", 96.0) / 100)
-    h = int(target_h * roi.get("heightPercent", 9.8) / 100)
-
-    ass_posix = ass_path.as_posix()
-    if len(ass_posix) >= 2 and ass_posix[1] == ":":
-        ass_posix = ass_posix[0] + "\\:" + ass_posix[2:]
-
-    # Tính toán các khối mask cố định liên tục (loại bỏ nhấp nháy, chỉ tắt khi nghỉ >= 1.8s)
-    if segments or mask_only_intervals:
-        blocks = compute_mask_intervals(segments or [], mask_only_intervals=mask_only_intervals, max_gap_s=1.8, padding_s=0.15)
-        active_intervals = [f"between(t,{st},{et})" for st, et in blocks]
-    else:
-        active_intervals = []
-
-    if active_intervals:
-        enable_filter = f":enable='{'+'.join(active_intervals)}'"
-    elif segments is not None:
-        enable_filter = ":enable='0'"
-    else:
-        enable_filter = ""
-
-    # Mask Kính Mờ Tự Nhiên (Frosted Glassmorphism 14% white tint) trên chuẩn 1080p
-    video_filter = (
-        f"[0:v]{scale_filter},split=2[base][ref];"
-        f"[ref]crop={w}:{h}:{x}:{y},boxblur=24:3:24:3,drawbox=x=0:y=0:w={w}:h={h}:color=white@0.14:t=fill[blur];"
-        f"[base][blur]overlay={x}:{y}{enable_filter},subtitles='{ass_posix}'[video]"
-    )
+    ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
+    video_filter = f"[0:v]{scale_filter},subtitles='{ass_escaped}'[video]"
     
     use_clean_bgm = clean_bgm_path and clean_bgm_path.is_file()
+    has_orig_audio = ffprobe_has_audio(source)
     command = ["ffmpeg", "-y", "-i", str(source)]
     if use_clean_bgm:
         command.extend(["-i", str(clean_bgm_path)])
@@ -762,16 +751,19 @@ def render_video(
         if use_clean_bgm:
             # Dùng nhạc nền AI tách sạch tiếng Trung + chuẩn hóa âm lượng Mobile LUFS -14dB
             filters.append(f"{mix_voice};[1:a]volume=0.85[bgm];[bgm][voice]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
-        elif audio_mode == "duck":
-            # Fallback giảm âm gốc + chuẩn hóa âm lượng Mobile LUFS -14dB
-            filters.append(f"{mix_voice};[0:a]volume=0.22[bg];[bg][voice]amix=inputs=2:duration=longest:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
-        elif audio_mode == "keep":
+        elif audio_mode == "duck" and has_orig_audio:
+            # Đệm nhạc nền nhẹ 8-10% lọc bớt giọng nói cũ + chuẩn hóa âm lượng Mobile LUFS -14dB
+            filters.append(f"{mix_voice};[0:a]volume=0.08,lowpass=f=3000[bg];[bg][voice]amix=inputs=2:duration=longest:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
+        elif audio_mode == "keep" and has_orig_audio:
             filters.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
         else:
             # Replace: chỉ dùng voice + chuẩn hóa âm lượng Mobile LUFS -14dB
             filters.append(f"{mix_voice};[voice]loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
     else:
-        filters.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
+        if has_orig_audio:
+            filters.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
+        else:
+            filters.append("aevalsrc=0:d=1[finalaudio]")
 
     command.extend([
         "-filter_complex", ";".join(filters),
@@ -972,7 +964,7 @@ def process_job(settings: Settings, rpc: RpcClient, job: dict[str, Any]) -> None
             segment["needsReview"] = bool(segment.get("needsReview")) or translation_review
 
     rpc.report(job_id, "tts_fit", 68)
-    voice_inputs: list[tuple[Path, int]] = []
+    raw_clips: list[dict[str, Any]] = []
     review_needed = False
     for segment in segments:
         raw_voice = job_dir / f"voice_{segment['position']:03d}_raw.mp3"
@@ -981,11 +973,24 @@ def process_job(settings: Settings, rpc: RpcClient, job: dict[str, Any]) -> None
         duration_ms, needs_review = fit_voice(raw_voice, fitted_voice, segment["endMs"] - segment["startMs"], float(config["voice"]["maxTempo"]))
         segment["voicePath"] = str(fitted_voice)
         segment["voiceDurationMs"] = duration_ms
-        # ĐỒNG BỘ: Subtitle kết thúc đúng lúc giọng đọc dứt
-        segment["endMs"] = segment["startMs"] + duration_ms
         segment["needsReview"] = bool(segment.get("needsReview")) or needs_review
         review_needed = review_needed or bool(segment["needsReview"])
-        voice_inputs.append((fitted_voice, segment["startMs"]))
+        raw_clips.append({
+            "segment": segment,
+            "fitted_voice": fitted_voice,
+            "startMs": segment["startMs"],
+            "endMs": segment["endMs"],
+            "durationSec": duration_ms / 1000.0,
+        })
+
+    # Áp dụng thuật toán Smart Gap Clamping để khống chế khoảng câm <= 600ms
+    clamped_clips = clamp_and_bridge_audio_gaps(raw_clips, max_gap_ms=600, min_pause_ms=250)
+    voice_inputs: list[tuple[Path, int]] = []
+    for c in clamped_clips:
+        seg = c["segment"]
+        seg["startMs"] = c["startMs"]
+        seg["endMs"] = c["endMs"]
+        voice_inputs.append((c["fitted_voice"], c["startMs"]))
 
     rpc.replace_segments(job_id, segments)
     manifest_path = job_dir / "segments.json"

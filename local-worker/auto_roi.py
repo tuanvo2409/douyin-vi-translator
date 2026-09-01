@@ -24,31 +24,76 @@ def get_video_duration(video_path: Path) -> float:
     except Exception:
         return 60.0
 
+
+def extract_frame_image(video_path: Path, timestamp_s: float, vf: str = "scale=1080:1920") -> cv2.Mat | None:
+    """Helper an toàn trích xuất frame hình ảnh từ video mà không để lại rác disk."""
+    tmp_dir = Path(tempfile.gettempdir())
+    frame_file = tmp_dir / f"_dubvi_f_{int(timestamp_s * 1000)}.jpg"
+    try:
+        subprocess.run([
+            "ffmpeg", "-y", "-ss", f"{timestamp_s:.2f}", "-i", str(video_path),
+            "-vf", vf, "-frames:v", "1", "-q:v", "2", str(frame_file)
+        ], capture_output=True)
+        if frame_file.is_file():
+            img = cv2.imread(str(frame_file))
+            frame_file.unlink(missing_ok=True)
+            return img
+    except Exception:
+        pass
+    finally:
+        frame_file.unlink(missing_ok=True)
+    return None
+
+
+def analyze_3s_hook(video_path: Path, asr_segs: list[dict]) -> dict:
+    """
+    Phân tích 3 giây đầu của video:
+    - Phát hiện xem có giọng nói và chữ tiếng Trung trong 3s đầu hay không.
+    - Trích xuất toạ độ dòng chữ Trung lớn nhất trong 3s đầu để cấy Thẻ Trắng và Hook.
+    """
+    ocr = get_ocr_instance()
+    has_voice = any(s.get("startMs", 0) < 3000 and len((s.get("asrTextZh") or "").strip()) >= 2 for s in asr_segs)
+    
+    img = extract_frame_image(video_path, 1.5, vf="scale=1080:1920")
+    detected_y_pct = 70.0
+    box_w = 950
+    if img is not None:
+        res_ocr, _ = ocr(img)
+        if res_ocr:
+            for item in res_ocr:
+                box, text = item[0], item[1]
+                if len(text.strip()) >= 2 and re.search(r'[\u4e00-\u9fff]', text):
+                    ymin = min(p[1] for p in box)
+                    ymax = max(p[1] for p in box)
+                    xmin = min(p[0] for p in box)
+                    xmax = max(p[0] for p in box)
+                    cy = (ymin + ymax) / 2 / 1920.0 * 100
+                    if 55.0 <= cy <= 85.0:
+                        detected_y_pct = round(cy, 1)
+                        box_w = max(box_w, int(xmax - xmin + 60))
+                        break
+
+    return {
+        "hasVoiceIn3s": has_voice,
+        "firstSegEndMs": asr_segs[0].get("endMs", 3500) if asr_segs else 3500,
+        "yPercent": detected_y_pct,
+        "boxWidth": box_w
+    }
+
+
 def auto_detect_subtitle_roi(video_path: Path, sample_seconds=None):
     """Chỉ dò và che dải phụ đề khớp với giọng nói (Voice Subtitle) ở dải dưới (64%-82%), bỏ qua caption hook ở giữa."""
     ocr = get_ocr_instance()
     candidate_subtitles = []
-    tmp_dir = Path(tempfile.gettempdir())
     
     dur = get_video_duration(video_path)
     if sample_seconds is None:
-        # Lấy các mốc phân bổ thông minh theo thời lượng video
         sample_seconds = [round(dur * pct, 1) for pct in [0.08, 0.18, 0.32, 0.50, 0.70, 0.85] if dur * pct >= 0.5]
     if not sample_seconds:
         sample_seconds = [2.0, 4.0, 8.0]
     
     for sec in sample_seconds:
-        frame_file = tmp_dir / f"_dubvi_roi_{int(sec*10)}.jpg"
-        res = subprocess.run([
-            "ffmpeg", "-y", "-ss", str(sec), "-i", str(video_path),
-            "-vf", "scale=1080:-2", "-frames:v", "1", "-q:v", "3", str(frame_file)
-        ], capture_output=True)
-        
-        if not frame_file.is_file():
-            continue
-            
-        img = cv2.imread(str(frame_file))
-        frame_file.unlink(missing_ok=True)
+        img = extract_frame_image(video_path, sec, vf="scale=1080:-2")
         if img is None:
             continue
             
@@ -64,7 +109,6 @@ def auto_detect_subtitle_roi(video_path: Path, sample_seconds=None):
             xmin = min(p[0] for p in box)
             xmax = max(p[0] for p in box)
             
-            # Chỉ lấy phụ đề giọng nói ở dải dưới (63% -> 85%), bỏ qua caption tò mò/hook ở giữa
             has_chinese = bool(re.search(r'[\u4e00-\u9fff]', text))
             clean_txt = text.strip()
             if has_chinese and len(clean_txt) >= 3 and ymin >= h_frame * 0.63 and ymax <= h_frame * 0.85:

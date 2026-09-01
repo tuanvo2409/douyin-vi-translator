@@ -278,6 +278,15 @@ def translate_with_openai_compatible(
     return segments
 
 
+def clean_vietnamese_text(text: str) -> str:
+    """Loại bỏ triệt để mọi ký tự tiếng Trung hoặc token hán tự còn sót lại trong bản dịch."""
+    if not text:
+        return ""
+    text = text.replace("thu纳", "đựng đồ").replace("纳", "")
+    text = re.sub(r'[\u4e00-\u9fff]', '', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
 def translate_segments_native(
     segments: List[Dict[str, Any]],
     provider: str = "gemini",
@@ -334,6 +343,11 @@ def translate_segments_native(
             src = s.get("sourceTextZh") or s.get("asrTextZh") or ""
             if src:
                 s["translatedTextVi"] = translate_with_google_free(src)
+
+    # 5. Sanitize sạch 100% ký tự tiếng Trung còn sót lại
+    for s in segments:
+        if s.get("translatedTextVi"):
+            s["translatedTextVi"] = clean_vietnamese_text(s["translatedTextVi"])
 
     return segments
 
@@ -427,12 +441,14 @@ YÊU CẦU BẮT BUỘC:
                 parsed = json.loads(raw_text)
                 hooks = parsed.get("hooks", [])
                 if hooks and len(hooks) >= 6:
+                    for h in hooks:
+                        h["text"] = clean_vietnamese_text(h.get("text", ""))
                     return hooks
         except Exception as e:
             logger.warning(f"Lỗi khi sinh Viral Hook bằng {model_name}: {e}")
             continue
 
-    return [
+    fallback_hooks = [
         {"type": "contradiction", "label": "🎭 Mâu Thuẫn", "text": "Phòng chật không phải do đồ nhiều đâu!"},
         {"type": "shocking_number", "label": "🔢 Con Số Sốc", "text": "Góc 10m2 rộng gấp đôi sau 3 ngày!"},
         {"type": "insider_secret", "label": "🤫 Bí Mật Nghề", "text": "Món đồ dân decor giấu kín bấy lâu nay!"},
@@ -442,6 +458,9 @@ YÊU CẦU BẮT BUỘC:
         {"type": "pattern_interrupt", "label": "🤯 Phá Chuẩn", "text": "Tủ sắt mini mà đựng được cả thế giới!"},
         {"type": "warning", "label": "🚨 Cảnh Báo", "text": "Đừng mua tủ này nếu sợ quá nghiện nha!"}
     ]
+    for h in fallback_hooks:
+        h["text"] = clean_vietnamese_text(h["text"])
+    return fallback_hooks
 
 
 def generate_social_post_caption(

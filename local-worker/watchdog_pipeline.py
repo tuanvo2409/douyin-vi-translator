@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """DUBVI Automated Pipeline Watchdog (Giai đoạn 2).
 
 Chạy ngầm giám sát thư mục video sạch từ Giai đoạn 1 (video reup raw/...).
@@ -30,6 +30,7 @@ from dubvi_worker import (
     render_video,
     synthesize,
     fit_voice,
+    clamp_and_bridge_audio_gaps,
     ffprobe_dimensions,
     generate_video_thumbnail,
 )
@@ -130,7 +131,7 @@ def process_single_video(item: dict, settings: Settings) -> bool:
 
         # 5. CapCut TTS Voiceover
         logger.info(f"  4/6 🎙️ Tổng hợp {len(segs)} câu thoại CapCut TTS ({default_voice})...")
-        voice_inputs = []
+        raw_clips = []
         for idx, seg in enumerate(segs):
             raw_v = job_dir / f"voice_{idx:03d}_raw.mp3"
             fit_v = job_dir / f"voice_{idx:03d}.mp3"
@@ -138,14 +139,28 @@ def process_single_video(item: dict, settings: Settings) -> bool:
             vi_text = (seg.get("translatedTextVi") or "...").strip()
             synthesize(vi_text, default_voice, raw_v, settings)
             fit_ms, _ = fit_voice(raw_v, fit_v, slot_ms, max_tempo=1.35)
-            voice_inputs.append((fit_v, seg["startMs"]))
+            raw_clips.append({
+                "segment": seg,
+                "fitted_voice": fit_v,
+                "startMs": seg["startMs"],
+                "endMs": seg["endMs"],
+                "durationSec": fit_ms / 1000.0,
+            })
 
-        # 6. Render Master 1080p Safe Zone 22% + LUFS -14dB + Thumbnail Cover
-        logger.info("  5/6 🎞️ Render FFmpeg 1080p Master (Safe Zone 22% & LUFS -14dB)...")
+        # Áp dụng thuật toán Smart Gap Clamping để khống chế khoảng câm <= 600ms
+        clamped_clips = clamp_and_bridge_audio_gaps(raw_clips, max_gap_ms=600, min_pause_ms=250)
+        voice_inputs = []
+        for c in clamped_clips:
+            seg = c["segment"]
+            seg["startMs"] = c["startMs"]
+            seg["endMs"] = c["endMs"]
+            voice_inputs.append((c["fitted_voice"], c["startMs"]))
+
+        # 6. Render Master 1080p Single White Pill Card + LUFS -14dB + Thumbnail Cover
+        logger.info("  5/6 🎞️ Render FFmpeg 1080p Master (Single White Pill Card & LUFS -14dB)...")
         ass_path = job_dir / f"{source.stem}_1080p.ass"
         srt_path = job_dir / f"{source.stem}_1080p.srt"
-        color = item.get("color", "#FFE600")
-        draw_ass(segs, 1080, 1920, roi, ass_path, font_size=44, font_color=color)
+        draw_ass(segs, 1080, 1920, roi, ass_path, font_size=48)
         draw_srt(segs, srt_path)
 
         render_video(
