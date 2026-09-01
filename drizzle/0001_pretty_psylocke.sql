@@ -1,1 +1,0 @@
-ALTER TABLE `video_segments` ADD `ocrAuditJson` json;

@@ -101,25 +101,22 @@ python studio_app.py
 
 ---
 
-## 📁 Cấu Trúc Thư Mục
+## 📁 Cấu Trúc Thư Mục Tối Giản (Lean Architecture)
 
-\\plaintext
+```plaintext
 douyin-vi-translator/
-├── local-worker/                 # Lõi xử lý AI & Studio Local
+├── local-worker/                 # Toàn bộ mã nguồn hệ thống
 │   ├── studio_app.py             # Giao diện Web NiceGUI Studio chính (Port 8080)
-│   ├── auto_roi.py               # Module AI tự động dò dải phụ đề giọng nói
-│   ├── dubvi_worker.py           # Engine xử lý pipeline (Demucs, Whisper, FFmpeg)
-│   ├── llm_translator.py         # Module dịch thuật Gemini 2.5 Flash
-│   ├── gemini_pool.py            # Quản lý xoay vòng API Key Gemini
-│   ├── file_picker.py            # Hộp thoại chọn file Windows
+│   ├── auto_roi.py               # AI dò dải phụ đề & Quét Sub Câm (RapidOCR)
+│   ├── dubvi_worker.py           # Pipeline xử lý chính (Whisper, CapCut TTS, FFmpeg 1080p)
+│   ├── llm_translator.py         # Chuyển ngữ Gemini 2.5 Flash & Ma trận 8 Hook Viral
+│   ├── gemini_pool.py            # Quản lý tự động xoay tua API Key Gemini
 │   ├── capcut_tts_api/           # Bộ kết nối API CapCut TikTok TTS
 │   ├── Voice.json                # Danh mục mã giọng đọc CapCut
 │   └── requirements.txt          # Danh sách thư viện Python
-├── client/                       # Web Control Plane (React + Vite)
-├── server/                       # Backend Cloud Server (Express + tRPC)
-├── .gitignore                    # Bộ lọc bảo mật không push dữ liệu rác/API key
+├── .gitignore                    # Bộ lọc bảo mật
 └── README.md                     # Tài liệu hướng dẫn sử dụng
-\
+```
 ---
 
 ## ⚙️ Các Lựa Chọn Giọng Đọc & Tùy Biến
