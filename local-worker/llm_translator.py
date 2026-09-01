@@ -23,10 +23,12 @@ Nhiệm vụ của bạn là chuyển thể toàn bộ kịch bản video Douyin
 🔥 ĐẶC BIỆT - CHIẾN THUẬT HOOK 3S ĐẦU TIÊN (THE 3-SECOND GOLDEN VIRAL HOOK):
 - Câu mở đầu (position: 0) là yếu tố QUYẾT ĐỊNH 80% tỷ lệ giữ chân người xem (Retention Rate) trên TikTok/Reels.
 - TUYỆT ĐỐI CẤM dịch câu đầu phẳng lặng, nhàm chán (như "Hôm nay mình dọn phòng...", "Hôm nay mình ở nhà...").
-- BẮT BUỘC phải biến câu đầu tiên thành một cú nổ (Punchline / Viral Hook) dựa theo bối cảnh toàn video:
-  + Gợi khoảng trống tò mò (Curiosity Gap): "Cứu tui, sự thật đằng sau căn phòng này nè...", "Ai cũng hỏi tui bí quyết bấy lâu nay..."
-  + Đánh trúng nỗi đau (Pain Point): "Phòng bé bằng lỗ mũi mà bừa như bãi rác thì làm sao...", "Hội người lười bơi hết vào đây..."
-  + Cảnh báo ngược (Reverse Psychology): "Đừng dại mua món này nếu...", "Nghiêm cấm xem clip này nếu không muốn viêm màng túi..."
+- BẮT BUỘC phải áp dụng 1 trong 4 công thức Hook viral đỉnh nhất TikTok Việt Nam dựa theo bối cảnh toàn video:
+  1. Gợi khoảng trống tò mò (Curiosity & FOMO): "Món này giấu kỹ lắm nha, tìm đỏ mắt mới ra!", "Không hiểu sao món này giờ mới nổi..."
+  2. Đánh trúng nỗi đau (Pain Point): "Bác nào ở trọ phòng bé bằng lỗ mũi bơi hết vào đây!", "Phát bực vì phòng bừa như bãi rác? Cứu tinh đây!"
+  3. Cảnh báo ngược (Reverse Psychology): "Đừng dại mua món này nếu sợ bị nghiện nha!", "Cảnh báo: Xem xong viêm màng túi ráng chịu!"
+  4. Tuyên bố chân ái (Bold Claim & Chân Ái): "Bỏ qua hết mấy loại đắt tiền đi, cái này mới là chân ái!", "Hack diện tích phòng 10 mét vuông trong 3 nốt nhạc!"
+- Tích cực sử dụng bộ POWER WORDS: chân ái, cứu tinh, đỉnh chóp, nghiện luôn, hack diện tích, bơi hết vào đây, chốt đơn, tiếc hùi hụi, 3 nốt nhạc.
 - Luôn đảm bảo số từ của câu mở đầu KHÔNG ĐƯỢC VƯỢT QUÁ `max_words` của slot đầu tiên!
 
 🎯 ĐỊNH HÌNH PERSONA (NHÂN VẬT CHÍNH):
@@ -318,21 +320,23 @@ def generate_viral_hooks(
 Dựa vào bối cảnh toàn bộ video sau đây:
 \"\"\"{context_text}\"\"\"
 
-Hãy sáng tạo ra 3 biến thể Hook mở đầu (Câu #1) cực bén để thay thế câu chào buồn ngủ, nhắm thẳng vào tâm lý tò mò/kể khổ/giật gân của người Việt.
+Hãy sáng tạo ra 4 biến thể Hook mở đầu (Câu #1) cực bén theo 4 công thức viral đỉnh nhất TikTok Việt Nam để thay thế câu chào buồn ngủ:
 YÊU CẦU BẮT BUỘC:
 1. Mỗi câu Hook KHÔNG ĐƯỢC VƯỢT QUÁ {max_w} từ (để đọc vừa vặn trong {round(first_slot_ms/1000, 1)}s).
-2. Viết tự nhiên, xưng hô gần gũi (tui/mình/mấy bà/các bác), dùng từ đệm bắt trend (nè, nha, luôn á, cứu tui...).
-3. Phân loại theo 3 góc nhìn tâm lý:
-   - "curiosity": Gây tò mò / Bí mật chưa từng tiết lộ.
+2. Viết tự nhiên, bắt tai, xưng hô gần gũi (tui/mình/mấy bà/các bác), sử dụng từ đệm bắt trend (nè, nha, luôn á, cứu tui...) và POWER WORDS (chân ái, cứu tinh, đỉnh chóp, nghiện luôn, hack diện tích, tiếc hùi hụi, 3 nốt nhạc).
+3. Phân loại theo 4 góc nhìn tâm lý:
+   - "curiosity": Gợi khoảng trống tò mò / Bí mật chưa từng tiết lộ.
    - "pain_point": Đánh trúng nỗi đau (phòng bừa, chật chội, đồ linh tinh, người lười).
-   - "warning": Cảnh báo / Ngược tâm lý (đừng mua nếu..., xem xong đừng nghiện...).
+   - "warning": Cảnh báo ngược tâm lý (đừng mua nếu..., xem xong đừng nghiện...).
+   - "bold_claim": Tuyên bố chân ái / Khẳng định vượt trội / Mẹo hack siêu tốc.
 
 ĐẦU RA BẮT BUỘC (JSON thuần túy):
 {{
   "hooks": [
     {{ "type": "curiosity", "label": "🤫 Gây Tò Mò", "text": "..." }},
     {{ "type": "pain_point", "label": "🎯 Đánh Trúng Nỗi Đau", "text": "..." }},
-    {{ "type": "warning", "label": "🚨 Cảnh Báo Ngược", "text": "..." }}
+    {{ "type": "warning", "label": "🚨 Cảnh Báo Ngược", "text": "..." }},
+    {{ "type": "bold_claim", "label": "🏆 Tuyên Bố Chân Ái", "text": "..." }}
   ]
 }}
 """
@@ -342,7 +346,8 @@ YÊU CẦU BẮT BUỘC:
         return [
             {"type": "curiosity", "label": "🤫 Gây Tò Mò", "text": "Món đồ chân ái giấu kín bấy lâu nay nè!"},
             {"type": "pain_point", "label": "🎯 Đánh Trúng Nỗi Đau", "text": "Phòng bừa cỡ nào gặp món này cũng sạch tinh!"},
-            {"type": "warning", "label": "🚨 Cảnh Báo Ngược", "text": "Đừng xem clip này nếu không muốn viêm màng túi nha!"}
+            {"type": "warning", "label": "🚨 Cảnh Báo Ngược", "text": "Đừng xem clip này nếu không muốn viêm màng túi nha!"},
+            {"type": "bold_claim", "label": "🏆 Tuyên Bố Chân Ái", "text": "Bỏ hết đồ đắt tiền đi, cái này mới là chân ái!"}
         ]
 
     for model_name in ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.0-flash"]:
@@ -358,7 +363,7 @@ YÊU CẦU BẮT BUỘC:
                 raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
                 parsed = json.loads(raw_text)
                 hooks = parsed.get("hooks", [])
-                if hooks and len(hooks) == 3:
+                if hooks and len(hooks) >= 3:
                     return hooks
         except Exception as e:
             logger.warning(f"Lỗi khi sinh Viral Hook bằng {model_name}: {e}")
@@ -367,5 +372,6 @@ YÊU CẦU BẮT BUỘC:
     return [
         {"type": "curiosity", "label": "🤫 Gây Tò Mò", "text": "Bí mật nâng tầm góc phòng nhỏ của tui nè!"},
         {"type": "pain_point", "label": "🎯 Đánh Trúng Nỗi Đau", "text": "Bác nào phòng chật đồ nhiều thì xem ngay nha!"},
-        {"type": "warning", "label": "🚨 Cảnh Báo Ngược", "text": "Nghiêm cấm xem nếu không muốn chốt đơn liền tay!"}
+        {"type": "warning", "label": "🚨 Cảnh Báo Ngược", "text": "Nghiêm cấm xem nếu không muốn chốt đơn liền tay!"},
+        {"type": "bold_claim", "label": "🏆 Tuyên Bố Chân Ái", "text": "Hack diện tích phòng nhỏ trong đúng 3 nốt nhạc!"}
     ]

@@ -707,13 +707,13 @@ def main_page():
         if not state["segments"]:
             ui.notify("Chưa có kịch bản để tạo Hook! Hãy bấm '1. Bóc Tách & Dịch AI' trước.", type="warning")
             return
-        ui.notify("Đang gọi AI sáng tạo 3 Hook mới theo bối cảnh...", type="info")
-        push_log("🧠 Đang phân tích bối cảnh kịch bản để tạo 3 Hook 3s mới...")
+        ui.notify("Đang gọi AI sáng tạo 4 Hook mới theo bối cảnh...", type="info")
+        push_log("🧠 Đang phân tích bối cảnh kịch bản để tạo 4 Hook 3s mới...")
         loop = asyncio.get_event_loop()
         new_hooks = await loop.run_in_executor(None, generate_viral_hooks, state["segments"])
         update_hook_ui(new_hooks)
-        push_log("✓ Đã cập nhật 3 gợi ý Hook 3s mới!")
-        ui.notify("Đã tạo xong 3 Hook mới!", type="positive")
+        push_log("✓ Đã cập nhật 4 gợi ý Hook 3s mới!")
+        ui.notify("Đã tạo xong 4 Hook mới!", type="positive")
 
     async def preview_selected_sentence():
         selected_rows = await grid.get_selected_rows()
