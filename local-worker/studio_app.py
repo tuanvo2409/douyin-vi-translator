@@ -38,7 +38,7 @@ from dubvi_worker import (
     transcribe,
 )
 from auto_roi import auto_detect_subtitle_roi
-from llm_translator import translate_segments_native
+from llm_translator import translate_segments_native, generate_viral_hooks
 from gemini_pool import gemini_pool
 
 # Cấu hình môi trường
@@ -82,6 +82,7 @@ state = {
     "font_size": 56,
     "font_color": "#FFFFFF",
     "roi": {"xPercent": 2.0, "yPercent": 66.0, "widthPercent": 96.0, "heightPercent": 9.8, "blurPx": 24},
+    "hooks": [],
     "logs": ["🟢 Hệ thống Dubvi Studio v4.5 sẵn sàng."],
 }
 
@@ -273,6 +274,18 @@ def main_page():
                 with ui.row().classes("items-center gap-2"):
                     ui.button("▶️ Nghe thử câu chọn", icon="play_arrow", on_click=lambda: preview_selected_sentence()).props("flat size=xs color=emerald").classes("text-xs font-bold bg-emerald-950/40 border border-emerald-800/40 px-2 py-1 rounded")
                     segment_count_badge = ui.badge("0 câu", color="slate").classes("text-xs font-bold")
+
+            # KHUNG GỢI Ý HOOK 3S ĐẦU TIÊN (VIRAL RETENTION HOOKS)
+            with ui.column().classes("w-full bg-indigo-950/40 p-2.5 rounded-xl border border-indigo-500/30 gap-1.5 mb-2"):
+                with ui.row().classes("w-full items-center justify-between"):
+                    with ui.row().classes("items-center gap-1.5"):
+                        ui.icon("auto_awesome", size="1rem").classes("text-amber-400")
+                        ui.label("🔥 GỢI Ý HOOK 3S ĐẦU (TĂNG RETENTION TIKTOK)").classes("text-[11px] font-black text-amber-300 uppercase tracking-wide")
+                    btn_refresh_hook = ui.button("Đổi Hook khác", icon="refresh", on_click=lambda: regenerate_hooks()).props("flat size=xs color=amber").classes("text-[10px] font-bold")
+                
+                hook_chips_row = ui.row().classes("w-full gap-1.5 flex-nowrap overflow-x-auto pb-1")
+                with hook_chips_row:
+                    ui.label("Chưa có gợi ý Hook. Bấm '1. Bóc Tách & Dịch AI' để AI phân tích bối cảnh và gợi ý 3 Hook đỉnh.").classes("text-[10px] text-slate-400 italic")
 
             ui.label("💡 Click đúp vào cột 'Tiếng Việt' để chỉnh sửa trực tiếp câu từ/tiếng lóng trước khi Render.").classes("text-xs text-slate-400 italic mb-2")
 
@@ -634,7 +647,50 @@ def main_page():
         badge_elem.set_text(f"{state['font_size']} px")
         css_size = int(state['font_size'] * 0.28)
         preview_text_label.style(f"font-family: '{state['font_name']}', sans-serif; font-size: {css_size}px; font-weight: 700; color: {state['font_color']}; text-shadow: -1.2px -1.2px 0 #000, 1.2px -1.2px 0 #000, -1.2px 1.2px 0 #000, 1.2px 1.2px 0 #000, 0 2px 4px rgba(0,0,0,0.8);")
-        push_log(f"📏 Đã chỉnh cỡ chữ: {state['font_size']} px")
+    def update_hook_ui(hooks: list):
+        hook_chips_row.clear()
+        state["hooks"] = hooks
+        with hook_chips_row:
+            if not hooks:
+                ui.label("Chưa có gợi ý Hook. Bấm '1. Bóc Tách & Dịch AI' để AI tự phân tích.").classes("text-[10px] text-slate-400 italic")
+                return
+            for h in hooks:
+                lbl = h.get("label", "Hook")
+                txt = h.get("text", "")
+                ui.button(
+                    f"{lbl}: \"{txt}\"",
+                    on_click=lambda t=txt: apply_hook_to_first_sentence(t)
+                ).props("outline size=xs color=indigo").classes("text-[10px] font-semibold bg-slate-900/90 hover:bg-indigo-600 hover:text-white transition-all text-left truncate max-w-[280px]")
+
+    def apply_hook_to_first_sentence(hook_text: str):
+        if not state["segments"]:
+            ui.notify("Chưa có kịch bản!", type="warning")
+            return
+        state["segments"][0]["translatedTextVi"] = hook_text
+        if grid.options.get("rowData") and len(grid.options["rowData"]) > 0:
+            grid.options["rowData"][0]["translatedTextVi"] = hook_text
+            grid.update()
+        if state["selected_video"]:
+            job_dir = DEFAULT_OUT_DIR / f"{state['selected_video'].stem}-full"
+            seg_file = job_dir / "segments.json"
+            try:
+                seg_file.write_text(json.dumps(state["segments"], ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        push_log(f"🔥 ĐÃ CHỌN HOOK 3S CHO CÂU #1: '{hook_text}'")
+        ui.notify("Đã áp dụng Hook 3s vào câu #1 kịch bản!", type="positive")
+
+    async def regenerate_hooks():
+        if not state["segments"]:
+            ui.notify("Chưa có kịch bản để tạo Hook! Hãy bấm '1. Bóc Tách & Dịch AI' trước.", type="warning")
+            return
+        ui.notify("Đang gọi AI sáng tạo 3 Hook mới theo bối cảnh...", type="info")
+        push_log("🧠 Đang phân tích bối cảnh kịch bản để tạo 3 Hook 3s mới...")
+        loop = asyncio.get_event_loop()
+        new_hooks = await loop.run_in_executor(None, generate_viral_hooks, state["segments"])
+        update_hook_ui(new_hooks)
+        push_log("✓ Đã cập nhật 3 gợi ý Hook 3s mới!")
+        ui.notify("Đã tạo xong 3 Hook mới!", type="positive")
 
     async def preview_selected_sentence():
         selected_rows = await grid.get_selected_rows()
@@ -699,8 +755,17 @@ def main_page():
                     grid.options["rowData"] = row_data
                     grid.update()
                     segment_count_badge.set_text(f"{len(cached_segs)} câu")
+
+                    # Tự động nạp hoặc tạo Hook từ Cache
+                    try:
+                        loop = asyncio.get_event_loop()
+                        hooks = await loop.run_in_executor(None, generate_viral_hooks, cached_segs)
+                        update_hook_ui(hooks)
+                    except Exception:
+                        pass
+
                     progress_bar.set_value(0.5)
-                    current_step_label.set_text(f"⚡ Đã nạp {len(cached_segs)} câu từ Cache (0.01s)!")
+                    current_step_label.set_text(f"⚡ Đã nạp {len(cached_segs)} câu từ Cache & Hook 3s!")
                     ui.notify(f"Đã nạp {len(cached_segs)} câu từ Cache!", type="positive")
                     return
             except Exception:
@@ -770,9 +835,19 @@ def main_page():
         grid.options["rowData"] = row_data
         grid.update()
         segment_count_badge.set_text(f"{len(segs)} câu")
+
+        # Tự động sinh 3 gợi ý Hook 3s đầu tăng Retention TikTok
+        try:
+            push_log("🔥 Đang phân tích bối cảnh để tạo 3 Hook 3s Viral mở đầu...")
+            hooks = await loop.run_in_executor(None, generate_viral_hooks, segs)
+            update_hook_ui(hooks)
+            push_log("✓ Đã sinh 3 gợi ý Hook 3s đầu thành công!")
+        except Exception as exc:
+            push_log(f"⚠️ Lỗi sinh Hook ({exc}).")
+
         progress_bar.set_value(0.5)
-        current_step_label.set_text("Đã nạp kịch bản vào AG Grid! Bạn có thể sửa câu từ.")
-        ui.notify("Đã dịch xong kịch bản!", type="positive")
+        current_step_label.set_text("Đã nạp kịch bản & Hook 3s! Bạn có thể chọn Hook hoặc sửa câu từ.")
+        ui.notify("Đã dịch xong kịch bản & gợi ý Hook 3s!", type="positive")
 
     async def run_tts_and_render():
         if not state["segments"]:
