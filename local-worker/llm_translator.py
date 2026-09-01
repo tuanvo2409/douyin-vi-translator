@@ -22,14 +22,21 @@ Nhiệm vụ của bạn là chuyển thể toàn bộ kịch bản video Douyin
 
 🔥 ĐẶC BIỆT - CHIẾN THUẬT HOOK 3S ĐẦU TIÊN (THE 3-SECOND GOLDEN VIRAL HOOK):
 - Câu mở đầu (position: 0) là yếu tố QUYẾT ĐỊNH 80% tỷ lệ giữ chân người xem (Retention Rate) trên TikTok/Reels.
-- TUYỆT ĐỐI CẤM dịch câu đầu phẳng lặng, nhàm chán (như "Hôm nay mình dọn phòng...", "Hôm nay mình ở nhà...").
-- BẮT BUỘC phải áp dụng 1 trong 4 công thức Hook viral đỉnh nhất TikTok Việt Nam dựa theo bối cảnh toàn video:
-  1. Gợi khoảng trống tò mò (Curiosity & FOMO): "Món này giấu kỹ lắm nha, tìm đỏ mắt mới ra!", "Không hiểu sao món này giờ mới nổi..."
-  2. Đánh trúng nỗi đau (Pain Point): "Bác nào ở trọ phòng bé bằng lỗ mũi bơi hết vào đây!", "Phát bực vì phòng bừa như bãi rác? Cứu tinh đây!"
-  3. Cảnh báo ngược (Reverse Psychology): "Đừng dại mua món này nếu sợ bị nghiện nha!", "Cảnh báo: Xem xong viêm màng túi ráng chịu!"
-  4. Tuyên bố chân ái (Bold Claim & Chân Ái): "Bỏ qua hết mấy loại đắt tiền đi, cái này mới là chân ái!", "Hack diện tích phòng 10 mét vuông trong 3 nốt nhạc!"
+- Cốt lõi: Tạo ra "Khoảng Trống Tò Mò" (Information Gap) trong não người xem theo nguyên lý: Thiếu -> Cần -> Phải Xem.
+- BẮT BUỘC phải biến câu đầu tiên thành cú nổ Punchline dựa theo bối cảnh thực tế của video:
+  + Mâu thuẫn / Nghịch lý: Phá vỡ điều người ta tưởng là đúng.
+  + Đánh trúng nỗi đau: Chạm đúng sự bực bội, khó chịu đời thường (phòng chật, bừa bộn, người lười).
+  + Bí mật / Tiết lộ: Tiết lộ điều người ngoài không biết.
+  + Cảnh báo ngược: Kích thích tò mò bằng cách cảnh báo/cấm đoán.
 - Tích cực sử dụng bộ POWER WORDS: chân ái, cứu tinh, đỉnh chóp, nghiện luôn, hack diện tích, bơi hết vào đây, chốt đơn, tiếc hùi hụi, 3 nốt nhạc.
 - Luôn đảm bảo số từ của câu mở đầu KHÔNG ĐƯỢC VƯỢT QUÁ `max_words` của slot đầu tiên!
+
+⛔ BỘ QUY TẮC "DIỆT SẠCH AI SLOP" (NEGATIVE PROMPTING BẮT BUỘC):
+1. TUYỆT ĐỐI CẤM mọi kiểu mở đầu sáo rỗng: "Xin chào mọi người", "Chào mừng các bạn", "Hôm nay mình...", "Trong video hôm nay...", "Bạn có bao giờ tự hỏi...".
+2. TUYỆT ĐỐI CẤM các từ hoa mỹ vô nghĩa (AI Clichés): "hành trình", "chìa khóa", "bức tranh lớn", "mở khóa tiềm năng", "thay đổi cuộc đời", "bạn sẽ không tin", "game changer", "bí quyết thành công".
+3. TUYỆT ĐỐI CẤM "AI Triads" (cấu trúc liệt kê 3 vế sáo rỗng): "nhanh hơn, thông minh hơn và hiệu quả hơn", "không chỉ X, mà còn Y, và cuối cùng là Z".
+4. TUYỆT ĐỐI CẤM tạo conversational tone giả tạo: "Bạn thấy đấy...", "Hãy nghĩ về điều này...", "Nghe có vẻ lạ đúng không?", "Đúng vậy...".
+5. NGUYÊN TẮC CỤ THỂ > TRỪU TƯỢNG: Không nói "món đồ tiện lợi", hãy nói "móc kẹp không cần khoan"; không nói "không gian nhỏ", hãy nói "phòng trọ 10 mét vuông".
 
 🎯 ĐỊNH HÌNH PERSONA (NHÂN VẬT CHÍNH):
 - Một người trẻ ở trọ/chung cư nhỏ, tính cách: hài hước, xéo xắt, châm biếm, lười nhưng thích sạch sẽ, nói nhiều, nhịp dồn dập, buôn chuyện tự nhiên như với bạn thân.
@@ -56,7 +63,7 @@ Nhiệm vụ của bạn là chuyển thể toàn bộ kịch bản video Douyin
 ⚡ QUY TẮC NHỊP ĐIỆU & ĐỘ DÀI ÂM TIẾT (CADENCE & SYLLABLES):
 1. Tốc độ đọc tiếng Việt tự nhiên cho Reels/TikTok là 3.0 - 3.5 từ / giây.
 2. Mỗi câu có kèm tham số `max_words`. Bạn BẮT BUỘC phải viết câu tiếng Việt có số từ KHÔNG ĐƯỢC VƯỢT QUÁ `max_words` để giọng đọc CapCut TTS không bị dồn chữ, ríu lưỡi hoặc nói hụt hơi.
-3. Câu cú ngắn gọn, có nhịp điệu dứt khoát, ngắt nhịp đúng chỗ.
+3. Thay đổi nhịp câu linh hoạt: câu rất ngắn để tạo lực, câu trung bình để phát triển ý.
 
 ĐẦU RA BẮT BUỘC:
 Chỉ trả về JSON thuần túy (không kèm giải thích markdown ngoài JSON):
@@ -316,27 +323,36 @@ def generate_viral_hooks(
             context_lines.append(t)
     context_text = " | ".join(context_lines)
     
-    prompt = f"""Bạn là bậc thầy sáng tạo Hook triệu view trên TikTok/Reels Việt Nam (chuyên gia giữ chân người xem trong 3 giây đầu).
+    prompt = f"""Bạn là bậc thầy sáng tạo Hook triệu view trên TikTok/Reels Việt Nam (chuyên gia tạo Khoảng Trống Tò Mò trong 3 giây đầu tiên).
 Dựa vào bối cảnh toàn bộ video sau đây:
 \"\"\"{context_text}\"\"\"
 
-Hãy sáng tạo ra 4 biến thể Hook mở đầu (Câu #1) cực bén theo 4 công thức viral đỉnh nhất TikTok Việt Nam để thay thế câu chào buồn ngủ:
+Hãy sáng tạo ra ĐÚNG 8 biến thể Hook mở đầu (Câu #1) cực bén theo Ma trận 8 công thức Hook triệu view kinh điển:
 YÊU CẦU BẮT BUỘC:
 1. Mỗi câu Hook KHÔNG ĐƯỢC VƯỢT QUÁ {max_w} từ (để đọc vừa vặn trong {round(first_slot_ms/1000, 1)}s).
-2. Viết tự nhiên, bắt tai, xưng hô gần gũi (tui/mình/mấy bà/các bác), sử dụng từ đệm bắt trend (nè, nha, luôn á, cứu tui...) và POWER WORDS (chân ái, cứu tinh, đỉnh chóp, nghiện luôn, hack diện tích, tiếc hùi hụi, 3 nốt nhạc).
-3. Phân loại theo 4 góc nhìn tâm lý:
-   - "curiosity": Gợi khoảng trống tò mò / Bí mật chưa từng tiết lộ.
-   - "pain_point": Đánh trúng nỗi đau (phòng bừa, chật chội, đồ linh tinh, người lười).
-   - "warning": Cảnh báo ngược tâm lý (đừng mua nếu..., xem xong đừng nghiện...).
-   - "bold_claim": Tuyên bố chân ái / Khẳng định vượt trội / Mẹo hack siêu tốc.
+2. Viết tự nhiên như lời nói, nhịp dứt khoát, dùng xưng hô gần gũi (tui/mình/mấy bà/các bác) và POWER WORDS (chân ái, cứu tinh, đỉnh chóp, nghiện luôn, hack diện tích, tiếc hùi hụi, 3 nốt nhạc).
+3. TUYỆT ĐỐI CẤM từ sáo rỗng AI (hành trình, chìa khóa, bí quyết, bạn sẽ không tin, game changer).
+4. Phân loại theo đúng 8 góc nhìn tâm lý:
+   - "contradiction": 🎭 Mâu Thuẫn (Phá vỡ niềm tin sai lầm)
+   - "shocking_number": 🔢 Con Số Sốc (Kết quả/chi phí/thời gian cụ thể)
+   - "insider_secret": 🤫 Bí Mật Nghề (Điều dân trong ngành/shop giấu kín)
+   - "result_first": ⚡ Kết Quả Trước (Thành quả bất ngờ trước quy trình)
+   - "personal_question": 🎯 Gọi Tên (Đánh trúng người xem & nỗi đau cụ thể)
+   - "in_medias_res": 🎬 Giữa Drama (Bắt đầu giữa tình huống căng thẳng)
+   - "pattern_interrupt": 🤯 Phá Chuẩn (So sánh ngược đời/cắt đứt thói quen lướt)
+   - "warning": 🚨 Cảnh Báo (Cảnh báo thẳng thừng/ngược tâm lý)
 
 ĐẦU RA BẮT BUỘC (JSON thuần túy):
 {{
   "hooks": [
-    {{ "type": "curiosity", "label": "🤫 Gây Tò Mò", "text": "..." }},
-    {{ "type": "pain_point", "label": "🎯 Đánh Trúng Nỗi Đau", "text": "..." }},
-    {{ "type": "warning", "label": "🚨 Cảnh Báo Ngược", "text": "..." }},
-    {{ "type": "bold_claim", "label": "🏆 Tuyên Bố Chân Ái", "text": "..." }}
+    {{ "type": "contradiction", "label": "🎭 Mâu Thuẫn", "text": "..." }},
+    {{ "type": "shocking_number", "label": "🔢 Con Số Sốc", "text": "..." }},
+    {{ "type": "insider_secret", "label": "🤫 Bí Mật Nghề", "text": "..." }},
+    {{ "type": "result_first", "label": "⚡ Kết Quả Trước", "text": "..." }},
+    {{ "type": "personal_question", "label": "🎯 Gọi Tên", "text": "..." }},
+    {{ "type": "in_medias_res", "label": "🎬 Giữa Drama", "text": "..." }},
+    {{ "type": "pattern_interrupt", "label": "🤯 Phá Chuẩn", "text": "..." }},
+    {{ "type": "warning", "label": "🚨 Cảnh Báo", "text": "..." }}
   ]
 }}
 """
@@ -344,10 +360,14 @@ YÊU CẦU BẮT BUỘC:
     key = gemini_pool.get_key() or api_key or os.getenv("GEMINI_API_KEY")
     if not key:
         return [
-            {"type": "curiosity", "label": "🤫 Gây Tò Mò", "text": "Món đồ chân ái giấu kín bấy lâu nay nè!"},
-            {"type": "pain_point", "label": "🎯 Đánh Trúng Nỗi Đau", "text": "Phòng bừa cỡ nào gặp món này cũng sạch tinh!"},
-            {"type": "warning", "label": "🚨 Cảnh Báo Ngược", "text": "Đừng xem clip này nếu không muốn viêm màng túi nha!"},
-            {"type": "bold_claim", "label": "🏆 Tuyên Bố Chân Ái", "text": "Bỏ hết đồ đắt tiền đi, cái này mới là chân ái!"}
+            {"type": "contradiction", "label": "🎭 Mâu Thuẫn", "text": "Phòng chật không phải do đồ nhiều đâu!"},
+            {"type": "shocking_number", "label": "🔢 Con Số Sốc", "text": "Góc 10m2 rộng gấp đôi sau 3 ngày!"},
+            {"type": "insider_secret", "label": "🤫 Bí Mật Nghề", "text": "Món đồ dân decor giấu kín bấy lâu nay!"},
+            {"type": "result_first", "label": "⚡ Kết Quả Trước", "text": "Hack phòng trọ ngăn nắp trong 3 nốt nhạc!"},
+            {"type": "personal_question", "label": "🎯 Gọi Tên", "text": "Bác nào phòng bừa cứu tinh đây rồi!"},
+            {"type": "in_medias_res", "label": "🎬 Giữa Drama", "text": "Đang dọn phòng mà muốn khóc thét nè!"},
+            {"type": "pattern_interrupt", "label": "🤯 Phá Chuẩn", "text": "Tủ sắt mini mà đựng được cả thế giới!"},
+            {"type": "warning", "label": "🚨 Cảnh Báo", "text": "Đừng mua tủ này nếu sợ quá nghiện nha!"}
         ]
 
     for model_name in ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.0-flash"]:
@@ -363,15 +383,19 @@ YÊU CẦU BẮT BUỘC:
                 raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
                 parsed = json.loads(raw_text)
                 hooks = parsed.get("hooks", [])
-                if hooks and len(hooks) >= 3:
+                if hooks and len(hooks) >= 6:
                     return hooks
         except Exception as e:
             logger.warning(f"Lỗi khi sinh Viral Hook bằng {model_name}: {e}")
             continue
 
     return [
-        {"type": "curiosity", "label": "🤫 Gây Tò Mò", "text": "Bí mật nâng tầm góc phòng nhỏ của tui nè!"},
-        {"type": "pain_point", "label": "🎯 Đánh Trúng Nỗi Đau", "text": "Bác nào phòng chật đồ nhiều thì xem ngay nha!"},
-        {"type": "warning", "label": "🚨 Cảnh Báo Ngược", "text": "Nghiêm cấm xem nếu không muốn chốt đơn liền tay!"},
-        {"type": "bold_claim", "label": "🏆 Tuyên Bố Chân Ái", "text": "Hack diện tích phòng nhỏ trong đúng 3 nốt nhạc!"}
+        {"type": "contradiction", "label": "🎭 Mâu Thuẫn", "text": "Phòng chật không phải do đồ nhiều đâu!"},
+        {"type": "shocking_number", "label": "🔢 Con Số Sốc", "text": "Góc 10m2 rộng gấp đôi sau 3 ngày!"},
+        {"type": "insider_secret", "label": "🤫 Bí Mật Nghề", "text": "Món đồ dân decor giấu kín bấy lâu nay!"},
+        {"type": "result_first", "label": "⚡ Kết Quả Trước", "text": "Hack phòng trọ ngăn nắp trong 3 nốt nhạc!"},
+        {"type": "personal_question", "label": "🎯 Gọi Tên", "text": "Bác nào phòng bừa cứu tinh đây rồi!"},
+        {"type": "in_medias_res", "label": "🎬 Giữa Drama", "text": "Đang dọn phòng mà muốn khóc thét nè!"},
+        {"type": "pattern_interrupt", "label": "🤯 Phá Chuẩn", "text": "Tủ sắt mini mà đựng được cả thế giới!"},
+        {"type": "warning", "label": "🚨 Cảnh Báo", "text": "Đừng mua tủ này nếu sợ quá nghiện nha!"}
     ]
