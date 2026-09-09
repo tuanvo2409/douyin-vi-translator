@@ -42,6 +42,13 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "2")
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass
 class Settings:
     api_base: str
@@ -60,6 +67,11 @@ class Settings:
     gemini_api_key: str | None = None
     deepseek_api_key: str | None = None
     openai_api_key: str | None = None
+    policy_mode: str = "off"
+    policy_enable_ai_judge: bool = False
+    policy_min_duration_seconds: float = 35.0
+    policy_min_speech_density: float = 0.60
+    policy_judge_threshold: float = 8.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -77,6 +89,9 @@ class Settings:
         log_dir.mkdir(parents=True, exist_ok=True)
         os.environ.setdefault("HF_HOME", str(model_dir / "huggingface"))
         os.environ.setdefault("XDG_CACHE_HOME", str(model_dir / "xdg"))
+        policy_mode = os.getenv("DUBVI_POLICY_MODE", "off").strip().lower()
+        if policy_mode not in {"off", "review", "enforce"}:
+            raise ValueError("DUBVI_POLICY_MODE must be one of: off, review, enforce")
         return cls(
             api_base=api_base,
             token=token,
@@ -94,6 +109,11 @@ class Settings:
             gemini_api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"),
             deepseek_api_key=os.getenv("DEEPSEEK_API_KEY"),
             openai_api_key=os.getenv("OPENAI_API_KEY"),
+            policy_mode=policy_mode,
+            policy_enable_ai_judge=_env_flag("DUBVI_POLICY_ENABLE_AI_JUDGE"),
+            policy_min_duration_seconds=float(os.getenv("DUBVI_POLICY_MIN_DURATION_SECONDS", "35")),
+            policy_min_speech_density=float(os.getenv("DUBVI_POLICY_MIN_SPEECH_DENSITY", "0.60")),
+            policy_judge_threshold=float(os.getenv("DUBVI_POLICY_JUDGE_THRESHOLD", "8.0")),
         )
 
 
@@ -972,6 +992,56 @@ def process_job(settings: Settings, rpc: RpcClient, job: dict[str, Any]) -> None
             segment["sourceTextZh"] = segment["asrTextZh"]
             segment["ocrAuditJson"] = audit
     log_job(f"Đã tạo {len(segments)} segment ASR/OCR")
+
+    if settings.policy_mode != "off":
+        from content_policy import (
+            ContentPolicyConfig,
+            ContentPolicyInput,
+            PolicyDecision,
+            PrefilterConfig,
+            evaluate_content_policy,
+        )
+
+        source_metadata = config.get("sourceMetadata")
+        if not isinstance(source_metadata, dict):
+            source_metadata = {}
+        policy_transcript = " ".join(
+            str(segment.get("sourceTextZh") or segment.get("ocrTextZh") or segment.get("asrTextZh") or "")
+            for segment in segments
+        ).strip()
+        policy_result = evaluate_content_policy(
+            ContentPolicyInput(
+                duration_seconds=ffprobe_duration(source),
+                segments=segments,
+                transcript=policy_transcript,
+                title=str(config.get("sourceTitle") or job.get("sourceName") or source.stem),
+                description=str(config.get("sourceDescription") or ""),
+                metadata=source_metadata,
+                author=str(config.get("sourceAuthor") or ""),
+                channel_profile=str(config.get("channelProfile") or ""),
+            ),
+            ContentPolicyConfig(
+                prefilter=PrefilterConfig(
+                    min_duration_seconds=settings.policy_min_duration_seconds,
+                    min_speech_density=settings.policy_min_speech_density,
+                ),
+                enable_ai_judge=settings.policy_enable_ai_judge,
+                judge_threshold=settings.policy_judge_threshold,
+                judge_api_key=settings.gemini_api_key,
+            ),
+        )
+        policy_path = job_dir / "policy.json"
+        policy_path.write_text(json.dumps(policy_result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        log_job(
+            f"Content policy: {policy_result.overall_decision.value} "
+            f"({', '.join(policy_result.reason_codes)})"
+        )
+        if settings.policy_mode == "enforce":
+            if policy_result.overall_decision == PolicyDecision.REJECT:
+                raise RuntimeError(f"Content policy rejected: {', '.join(policy_result.reason_codes)}")
+            if policy_result.needs_review:
+                rpc.report(job_id, "policy_review", 48, status="awaiting_review", output_path=str(policy_path))
+                return
 
     rpc.report(job_id, "translate_vi", 52)
     if settings.translation_engine == "llm":
