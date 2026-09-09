@@ -114,14 +114,14 @@ CHANNEL_DEFAULTS = {
 
 
 def scan_multi_channel_raw(base_dirs: list[Path] | None = None) -> list[dict[str, Any]]:
-    """Quét đa kênh tự động từ Giai đoạn 1 (video reup raw/...) và đọc file .meta.json tương ứng."""
+    """Discover local media and its optional reup sidecar metadata.
+
+    Callers can still provide explicit scan roots. The default is intentionally
+    limited to the configured DUBVI media directory; it never scans a whole
+    user profile or another account's directories.
+    """
     if base_dirs is None:
-        base_dirs = [
-            Path(r"C:\Users\vmath\Downloads\douyinnnnnnnnnnn\video reup raw"),
-            Path(r"C:\Users\vmath\Videos\douyin"),
-            Path(r"C:\Users\vmath\Downloads\video douyin raw"),
-            Path(r"C:\Users\vmath\Downloads")
-        ]
+        base_dirs = [Settings.from_env().media_dir]
         
     discovered: list[dict[str, Any]] = []
     seen = set()
@@ -129,7 +129,9 @@ def scan_multi_channel_raw(base_dirs: list[Path] | None = None) -> list[dict[str
     for base in base_dirs:
         if not base.is_dir():
             continue
-        for p in list(base.rglob("*.mp4")) + list(base.rglob("*.mov")) + list(base.rglob("*.mkv")):
+        for p in base.rglob("*"):
+            if p.suffix.lower() not in VIDEO_EXTENSIONS:
+                continue
             if not p.is_file() or p.name.startswith("_") or str(p.resolve()) in seen:
                 continue
             seen.add(str(p.resolve()))
@@ -149,10 +151,18 @@ def scan_multi_channel_raw(base_dirs: list[Path] | None = None) -> list[dict[str
                         meta_data = json.loads(alt_meta.read_text(encoding="utf-8"))
                     except Exception:
                         pass
+
+            # Versioned bridge sidecars are a readiness contract. Legacy/manual
+            # files remain usable without a sidecar, but an explicit incomplete
+            # handoff is never shown as a completed DUBVI input.
+            if "handoff_schema_version" in meta_data and meta_data.get("handoff_status") != "complete":
+                continue
                         
             channel_profile = meta_data.get("channel_profile") or p.parent.name
             target_platform = meta_data.get("target_platform") or "tiktok"
-            vpdq_status = meta_data.get("vpdq_status") or ("PASSED" if meta_data.get("vpdq_similarity_percent") else "UNKNOWN")
+            vpdq_status = meta_data.get("vpdq_status") or (
+                "PASSED" if meta_data.get("vpdq_similarity_percent") is not None else "UNKNOWN"
+            )
             
             # Gán style kịch bản và giọng đọc mặc định theo kênh
             cleaned_channel = channel_profile.lower().replace(" ", "_").replace("-", "_")
@@ -179,6 +189,14 @@ def scan_multi_channel_raw(base_dirs: list[Path] | None = None) -> list[dict[str
                 "vpdq_similarity": meta_data.get("vpdq_similarity_percent"),
                 "zoom_factor": meta_data.get("zoom_factor"),
                 "duration_seconds": meta_data.get("duration_seconds"),
+                "handoff_schema_version": meta_data.get("handoff_schema_version"),
+                "handoff_status": meta_data.get("handoff_status"),
+                "original_filename": meta_data.get("original_filename"),
+                "output_filename": meta_data.get("output_filename"),
+                "original_md5": meta_data.get("original_md5"),
+                "output_md5": meta_data.get("output_md5"),
+                "encoder_used": meta_data.get("encoder_used"),
+                "layout_mode": meta_data.get("layout_mode"),
                 "default_voice": cfg["default_voice"],
                 "style_tag": cfg["style_tag"],
                 "color": cfg["color"],
@@ -389,7 +407,7 @@ def translate_to_vietnamese(text: str, slot_ms: int) -> tuple[str, bool]:
     try:
         import argostranslate.translate
         translated = argostranslate.translate.translate(text, "zh", "vi")
-    except Exception:
+    except Exception as exc:
         # Argos packages do not always ship a direct Chinese-Vietnamese pair.
         # Marian downloads once into DUBVI_MODEL_DIR, then translates locally.
         try:
@@ -405,7 +423,11 @@ def translate_to_vietnamese(text: str, slot_ms: int) -> tuple[str, bool]:
             generated = model.generate(**inputs, max_new_tokens=128)
             translated = tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
         except Exception as exc:
-            raise RuntimeError("Dịch thất bại. Hãy cài model Argos phù hợp hoặc để Marian tải model local trong DUBVI_MODEL_DIR.") from exc
+            raise RuntimeError(
+                "Dịch máy local không khả dụng. Cài một lựa chọn trong "
+                "requirements-optional.txt (argostranslate hoặc transformers) "
+                "và model phù hợp, hoặc cấu hình LLM translation."
+            ) from exc
     if not translated or translated == text:
         raise RuntimeError("Dịch không trả về tiếng Việt; hãy thử lại hoặc kiểm tra model/kết nối mạng.")
     translated = translated.strip()
@@ -801,7 +823,15 @@ def generate_video_thumbnail(
             # Chọn font hệ thống Windows
             font_size = int(h * 0.045)  # ~86px trên 1080x1920
             font = None
-            for font_path in [r"C:\Windows\Fonts\arialbd.ttf", r"C:\Windows\Fonts\tahomabd.ttf", r"C:\Windows\Fonts\segoeuib.ttf"]:
+            font_paths = []
+            configured_font = os.getenv("DUBVI_THUMBNAIL_FONT")
+            if configured_font:
+                font_paths.append(Path(configured_font).expanduser())
+            windows_font_dir = os.getenv("WINDIR")
+            if windows_font_dir:
+                font_root = Path(windows_font_dir) / "Fonts"
+                font_paths.extend(font_root / name for name in ("arialbd.ttf", "tahomabd.ttf", "segoeuib.ttf"))
+            for font_path in font_paths:
                 if os.path.exists(font_path):
                     try:
                         font = ImageFont.truetype(font_path, font_size)

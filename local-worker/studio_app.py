@@ -48,20 +48,13 @@ from gemini_pool import gemini_pool
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 settings = Settings.from_env()
 
-# Thư mục làm việc
-DEFAULT_RAW_DIR = Path(r"C:\Users\vmath\Downloads\video douyin raw")
-DEFAULT_REUP_DIR = Path(r"C:\Users\vmath\Downloads\douyinnnnnnnnnnn\video reup raw")
-DEFAULT_OUT_DIR = Path(r"C:\Users\vmath\Videos\douyin\dubvi-output")
-DEFAULT_RAW_DIR.mkdir(parents=True, exist_ok=True)
-DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
+# Thư mục làm việc được xác định bởi Settings/from_env.
+DEFAULT_RAW_DIR = settings.media_dir
+DEFAULT_OUT_DIR = settings.output_dir
 
 # Mount các thư mục video trên máy để phát trực tiếp qua HTTP Range streaming
 app.add_static_files("/output", str(DEFAULT_OUT_DIR))
 app.add_static_files("/raw", str(DEFAULT_RAW_DIR))
-if DEFAULT_REUP_DIR.is_dir():
-    app.add_static_files("/reup_raw", str(DEFAULT_REUP_DIR))
-app.add_static_files("/downloads", r"C:\Users\vmath\Downloads")
-app.add_static_files("/videos", r"C:\Users\vmath\Videos")
 
 @app.post("/api/upload_video")
 async def api_upload_video(file: UploadFile = File(...)):
@@ -117,7 +110,7 @@ CHANNEL_FILTER_OPTIONS = {
     "all": "🌐 Tất cả các Page & Thư mục",
     "page_giai_cuu_chuong_lon": "🐷 Page: Giải Cứu Chuồng Lợn (Review / Before-After)",
     "page_goc_tro_bat_on": "🏠 Page: Góc Trọ Bất Ổn (Drama KTX / Ở Chung)",
-    "other": "📁 Thư mục khác (Downloads / Videos)"
+    "other": "📁 Thư mục kênh khác"
 }
 
 
@@ -425,8 +418,6 @@ def main_page():
         p_str = str(p_res).lower()
         out_str = str(DEFAULT_OUT_DIR.resolve()).lower()
         raw_str = str(DEFAULT_RAW_DIR.resolve()).lower()
-        dl_str = str(Path(r"C:\Users\vmath\Downloads").resolve()).lower()
-        vid_str = str(Path(r"C:\Users\vmath\Videos").resolve()).lower()
 
         if p_str.startswith(out_str):
             rel = p_res.relative_to(DEFAULT_OUT_DIR.resolve()).as_posix()
@@ -434,12 +425,6 @@ def main_page():
         elif p_str.startswith(raw_str):
             rel = p_res.relative_to(DEFAULT_RAW_DIR.resolve()).as_posix()
             return f"/raw/{rel}?t={time.time()}"
-        elif p_str.startswith(dl_str):
-            rel = p_res.relative_to(Path(r"C:\Users\vmath\Downloads").resolve()).as_posix()
-            return f"/downloads/{rel}?t={time.time()}"
-        elif p_str.startswith(vid_str):
-            rel = p_res.relative_to(Path(r"C:\Users\vmath\Videos").resolve()).as_posix()
-            return f"/videos/{rel}?t={time.time()}"
         else:
             target = DEFAULT_RAW_DIR / p.name
             if not target.is_file() or target.stat().st_size != p.stat().st_size:

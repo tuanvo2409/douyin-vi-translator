@@ -1,0 +1,11 @@
+# Optional local/offline translation fallback. Install at least one when the
+# primary LLM translation path is not available.
+argostranslate>=1.9.0
+transformers>=4.40.0
+
+# Optional enhanced media features. The worker falls back safely when these
+# packages are absent.
+demucs>=4.0.0
+torch>=2.0.0
+torchaudio>=2.0.0
+Pillow>=10.0.0
