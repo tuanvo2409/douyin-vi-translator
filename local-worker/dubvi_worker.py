@@ -20,7 +20,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import requests
 try:
@@ -901,7 +901,14 @@ def generate_video_thumbnail(
         return False
 
 
-def process_job(settings: Settings, rpc: RpcClient, job: dict[str, Any]) -> None:
+def process_job(
+    settings: Settings,
+    rpc: RpcClient,
+    job: dict[str, Any],
+    *,
+    policy_observer: Callable[[Any], Any] | None = None,
+    canonical_policy_outcomes: bool = False,
+) -> None:
     job_id = job["id"]
     config = job["configJson"]
     source = (settings.media_dir / job["sourceKey"]).resolve()
@@ -1037,18 +1044,38 @@ def process_job(settings: Settings, rpc: RpcClient, job: dict[str, Any]) -> None
                 judge_api_key=settings.gemini_api_key,
             ),
         )
+        if policy_observer is not None:
+            policy_observer(policy_result)
         policy_path = job_dir / "policy.json"
-        policy_path.write_text(json.dumps(policy_result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        if canonical_policy_outcomes:
+            policy_document = {
+                "policy_schema_version": 1,
+                "mode": settings.policy_mode,
+                "overall_decision": policy_result.overall_decision.value,
+                "reason_codes": list(policy_result.reason_codes)[:32],
+                "needs_review": policy_result.needs_review,
+                "evaluated_at": policy_result.evaluated_at,
+            }
+        else:
+            policy_document = policy_result.to_dict()
+        policy_path.write_text(
+            json.dumps(policy_document, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         log_job(
             f"Content policy: {policy_result.overall_decision.value} "
             f"({', '.join(policy_result.reason_codes)})"
         )
-        if settings.policy_mode == "enforce":
+        if settings.policy_mode == "enforce" and not canonical_policy_outcomes:
             if policy_result.overall_decision == PolicyDecision.REJECT:
                 raise RuntimeError(f"Content policy rejected: {', '.join(policy_result.reason_codes)}")
             if policy_result.needs_review:
                 rpc.report(job_id, "policy_review", 48, status="awaiting_review", output_path=str(policy_path))
                 return
+    elif canonical_policy_outcomes and policy_observer is not None:
+        # Canonical mode makes disabled policy explicit; it must never become
+        # a synthetic pass or fabricate deep-policy evidence.
+        policy_observer(None)
 
     rpc.report(job_id, "translate_vi", 52)
     if settings.translation_engine == "llm":

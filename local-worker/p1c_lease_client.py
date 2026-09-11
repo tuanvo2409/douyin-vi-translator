@@ -68,6 +68,18 @@ class TranslatorLeaseBridgeClient:
             raise LeaseBridgeUnavailable("DUBVI_CONTROL_PLANE_ROOT is required")
         return cls(Path(raw), executable=executable)
 
+    @classmethod
+    def from_settings(
+        cls,
+        settings,
+        *,
+        executable: str | None = None,
+    ) -> "TranslatorLeaseBridgeClient":
+        root = getattr(settings, "control_plane_root", None)
+        if root is None:
+            raise LeaseBridgeUnavailable("DUBVI_CONTROL_PLANE_ROOT is required")
+        return cls(root, executable=executable)
+
     def acquire(self, job: Mapping[str, object]) -> LeaseBridgeResponse:
         return self._call("acquire", job)
 

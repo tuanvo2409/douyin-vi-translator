@@ -41,6 +41,7 @@ def run_lease_aware_work(
     sleep: Callable[[float], None] = time.sleep,
     occurred_at_utc: str | None = None,
     utc_now: Callable[[], str] | None = None,
+    completion_callback: Callable[[Mapping[str, object], HeavyWorkHandle], None] | None = None,
 ) -> WorkerResult:
     """Admit one accepted job, start only after a valid lease, then renew it.
 
@@ -89,12 +90,18 @@ def run_lease_aware_work(
             return _lease_lost(handle, document, lease_id, settings, occurred_at_utc)
         confirmed_expiry = str(renewed.lease["expires_at"])
         next_heartbeat = monotonic() + renewed.heartbeat_seconds
+    completion_outcome = "work_completed"
+    if completion_callback is not None:
+        try:
+            completion_callback(document, handle)
+        except Exception:
+            completion_outcome = "completion_reconciliation_required"
     try:
         released = lease_client.release(document, lease_id)
     except LeaseBridgeUnavailable:
-        return WorkerResult("work_completed_release_unconfirmed", lease_id)
+        return WorkerResult(completion_outcome + "_release_unconfirmed", lease_id)
     return WorkerResult(
-        "work_completed_lease_released" if released.lease is not None else "work_completed_release_unconfirmed",
+        completion_outcome + ("_lease_released" if released.lease is not None else "_release_unconfirmed"),
         lease_id,
     )
 
