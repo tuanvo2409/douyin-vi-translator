@@ -76,7 +76,24 @@ class CanonicalChildHandle:
         return self.process.poll()
 
     def terminate(self) -> None:
-        self.process.terminate()
+        if self.process.poll() is not None:
+            return
+        if os.name == "nt":
+            subprocess.run(
+                [
+                    "taskkill",
+                    "/PID",
+                    str(self.process.pid),
+                    "/T",
+                    "/F",
+                ],
+                shell=False,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            self.process.terminate()
 
     def wait(self, timeout: float | None = None) -> object:
         return self.process.wait(timeout=timeout)
@@ -409,19 +426,27 @@ def run_child_job(settings: P1CSettings, translator_job_id: str) -> dict[str, ob
             job_id,
             "failed",
             deep_policy=policy_holder["deep_policy"],
-            error_classification="PROCESSING_ERROR",
+            error_classification="PROCESSING_FAILED",
             diagnostic_summary=str(error),
         )
     if adapter.last_status != "complete" or adapter.completed_output_path is None:
         return _receipt(job_id, "incomplete", deep_policy=policy_holder["deep_policy"])
     try:
         output = publish_canonical_output(settings, job_id, adapter.completed_output_path)
+    except CanonicalOutputConflict as error:
+        return _receipt(
+            job_id,
+            "failed",
+            deep_policy=policy_holder["deep_policy"],
+            error_classification="FINAL_PATH_CONFLICT",
+            diagnostic_summary=str(error),
+        )
     except Exception as error:
         return _receipt(
             job_id,
             "failed",
             deep_policy=policy_holder["deep_policy"],
-            error_classification="OUTPUT_PUBLICATION_ERROR",
+            error_classification="OUTPUT_VERIFY_FAILED",
             diagnostic_summary=str(error),
         )
     return _receipt(
@@ -460,7 +485,7 @@ def main(argv: list[str] | None = None) -> int:
         receipt = _receipt(
             args.translator_job_id,
             "failed",
-            error_classification="CHILD_BOUNDARY_ERROR",
+            error_classification="PROCESSING_FAILED",
             diagnostic_summary=str(error),
         )
         sys.stdout.buffer.write(canonical_json_bytes(receipt))
@@ -490,9 +515,9 @@ def _legacy_settings(settings: P1CSettings, work_base: Path, policy_mode: str):
         capcut_voice=os.environ.get("DUBVI_CAPCUT_VOICE", "BV421_vivn_streaming"),
         translation_engine=os.environ.get("DUBVI_TRANSLATION_ENGINE", "llm").lower(),
         llm_provider=os.environ.get("DUBVI_LLM_PROVIDER", "gemini").lower(),
-        gemini_api_key=None,
-        deepseek_api_key=None,
-        openai_api_key=None,
+        gemini_api_key=os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"),
+        deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY"),
+        openai_api_key=os.environ.get("OPENAI_API_KEY"),
         policy_mode=policy_mode,
         policy_enable_ai_judge=False,
         policy_min_duration_seconds=35.0,
@@ -618,7 +643,7 @@ def _receipt_to_terminal_event(document: Mapping[str, object], receipt: Mapping[
     elif event_kind == "review_required":
         event["error_classification"] = "DEEP_POLICY_REVIEW"
     else:
-        event["error_classification"] = receipt.get("error_classification", "PROCESSING_ERROR")
+        event["error_classification"] = receipt.get("error_classification", "PROCESSING_FAILED")
     if receipt.get("diagnostic_summary") is not None:
         event["diagnostic_summary"] = receipt["diagnostic_summary"]
     if receipt.get("deep_policy") is not None:

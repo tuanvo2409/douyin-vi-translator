@@ -165,11 +165,42 @@ def accept_next_translator_job(
     *,
     occurred_at_utc: str | None = None,
 ) -> AcceptedTranslatorJob | None:
-    """Accept the first valid pending envelope in lexical order."""
+    """Accept the first admission-ready envelope in lexical order.
+
+    Immutable status evidence, rather than output files or envelope metadata,
+    determines whether an envelope is runnable.  A started attempt without a
+    terminal event is skipped for automatic queue progress and must be handled
+    by explicit reconciliation; a terminal sequence-three event is never
+    rerun.
+    """
 
     for path in iter_translator_envelopes(settings):
-        return accept_translator_envelope(path, settings, occurred_at_utc=occurred_at_utc)
+        accepted = accept_translator_envelope(path, settings, occurred_at_utc=occurred_at_utc)
+        job_id = str(accepted.document["translator_job_id"])
+        started = _optional_status_event(settings, job_id, 2)
+        terminal = _optional_status_event(settings, job_id, 3)
+        if started is not None and terminal is None:
+            continue
+        if terminal is not None:
+            continue
+        return accepted
     return None
+
+
+def _optional_status_event(
+    settings: P1CSettings,
+    job_id: str,
+    sequence: int,
+) -> dict[str, object] | None:
+    """Read one immutable event, distinguishing absence from corruption."""
+
+    path = _status_path(settings, job_id, sequence)
+    if not path.exists() and not path.is_symlink():
+        return None
+    try:
+        return load_status_event(settings, job_id, sequence)
+    except TranslatorStatusError as error:
+        raise TranslatorIntakeError(f"existing Translator status is invalid: {error}") from error
 
 
 def _accepted_identity_matches(event: Mapping[str, object], document: Mapping[str, object]) -> bool:

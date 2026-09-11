@@ -92,6 +92,19 @@ def load_status_event(
         raise TranslatorStatusError("Translator status is not canonical bytes")
     if document["engine_kind"] != "translator" or document["engine_job_id"] != engine_job_id or document["sequence"] != sequence:
         raise TranslatorStatusError("Translator status identity does not match its path")
+    expected_pairs = {
+        1: {("accepted", "accepted")},
+        2: {("started", "running")},
+        3: {
+            ("succeeded", "succeeded"),
+            ("failed", "failed"),
+            ("rejected", "rejected"),
+            ("review_required", "review_required"),
+            ("lease_lost", "running"),
+        },
+    }
+    if sequence not in expected_pairs or (document["event_kind"], document["state"]) not in expected_pairs[sequence]:
+        raise TranslatorStatusError("Translator status sequence has an illegal event kind")
     return document
 
 

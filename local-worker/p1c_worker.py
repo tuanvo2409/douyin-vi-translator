@@ -2,16 +2,29 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Mapping, Protocol
 
 from dubvi_engine_contract import ContractValidationError, validate_control_plane_to_translator_job
 
 from p1c_config import P1CSettings
-from p1c_lease_client import LeaseBridgeUnavailable, LeaseBridgeResponse
+from p1c_config import load_p1c_settings
+from p1c_intake import (
+    TranslatorIntakeError,
+    accept_next_translator_job,
+    accept_translator_envelope,
+)
+from p1c_lease_client import (
+    LeaseBridgeUnavailable,
+    LeaseBridgeResponse,
+    TranslatorLeaseBridgeClient,
+)
 from p1c_status import TranslatorStatusError, load_status_event, publish_status_event
 
 
@@ -205,3 +218,172 @@ def _normalize_timestamp(value: str) -> str:
 
 def _utc_now() -> str:
     return _normalize_timestamp(datetime.now(timezone.utc).isoformat())
+
+
+def run_canonical_once(
+    settings: P1CSettings,
+    *,
+    translator_job_id: str | None = None,
+) -> dict[str, object]:
+    """Run one canonical Translator admission without duplicating CP8 logic."""
+
+    _require_canonical_roots(settings)
+    if translator_job_id is not None:
+        job_id = _canonical_cli_uuid(translator_job_id)
+        envelope_path = settings.translator_job_dir / f"translator-job-{job_id}.job.json"
+        if not envelope_path.is_file() or envelope_path.is_symlink():
+            raise TranslatorIntakeError("requested Translator job envelope was not found")
+        accepted = accept_translator_envelope(envelope_path, settings)
+    else:
+        accepted = accept_next_translator_job(settings)
+    if accepted is None:
+        return {"outcome": "no_work"}
+
+    job_id = str(accepted.document["translator_job_id"])
+    started = _optional_worker_status(settings, job_id, 2)
+    terminal = _optional_worker_status(settings, job_id, 3)
+    if terminal is not None:
+        return _translator_report(
+            settings,
+            job_id,
+            outcome=_terminal_outcome(terminal),
+            worker_outcome="terminal_existing",
+            lease_id=terminal.get("lease_id"),
+            terminal=terminal,
+        )
+    if started is not None:
+        return _translator_report(
+            settings,
+            job_id,
+            outcome="reconciliation_required",
+            worker_outcome="started_without_terminal",
+            lease_id=started.get("lease_id"),
+        )
+
+    from p1c_processing import run_canonical_processing
+
+    bridge = TranslatorLeaseBridgeClient.from_settings(settings)
+    worker_result = run_canonical_processing(
+        settings,
+        accepted.envelope_path,
+        bridge,
+    )
+    terminal = _optional_worker_status(settings, job_id, 3)
+    outcome = _terminal_outcome(terminal) if terminal is not None else _worker_outcome(worker_result.outcome)
+    return _translator_report(
+        settings,
+        job_id,
+        outcome=outcome,
+        worker_outcome=worker_result.outcome,
+        lease_id=worker_result.lease_id,
+        terminal=terminal,
+    )
+
+
+def _require_canonical_roots(settings: P1CSettings) -> None:
+    roots = (
+        ("DUBVI_TRANSLATOR_JOB_DIR", settings.translator_job_dir),
+        ("DUBVI_MEDIA_DIR", settings.media_dir),
+        ("DUBVI_ENGINE_STATUS_DIR", settings.engine_status_dir),
+        ("DUBVI_OUTPUT_DIR", settings.output_dir),
+        ("DUBVI_CONTROL_PLANE_ROOT", settings.control_plane_root),
+    )
+    for name, path in roots:
+        if path is None or path.is_symlink() or not path.is_dir():
+            raise TranslatorWorkerError(f"{name} must be an existing non-symlink directory")
+
+
+def _optional_worker_status(
+    settings: P1CSettings,
+    job_id: str,
+    sequence: int,
+) -> dict[str, object] | None:
+    path = settings.engine_status_dir / "translator" / job_id / f"event-{sequence:06d}.json"
+    if not path.exists() and not path.is_symlink():
+        return None
+    try:
+        return load_status_event(settings, job_id, sequence)
+    except TranslatorStatusError as error:
+        raise TranslatorWorkerError(f"existing Translator status is invalid: {error}") from error
+
+
+def _canonical_cli_uuid(value: str) -> str:
+    if not isinstance(value, str):
+        raise TranslatorWorkerError("translator job id is invalid")
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, TypeError, AttributeError) as error:
+        raise TranslatorWorkerError("translator job id is invalid") from error
+    if value != str(parsed):
+        raise TranslatorWorkerError("translator job id is invalid")
+    return value
+
+
+def _terminal_outcome(event: Mapping[str, object] | None) -> str:
+    if event is None:
+        return "reconciliation_required"
+    event_kind = event.get("event_kind")
+    if event_kind in {"succeeded", "failed", "rejected", "review_required"}:
+        return str(event_kind)
+    return "reconciliation_required"
+
+
+def _worker_outcome(value: str) -> str:
+    if value.startswith("completion_reconciliation") or value in {"lease_lost", "lease_lost_status_unavailable"}:
+        return "reconciliation_required"
+    return value
+
+
+def _translator_report(
+    settings: P1CSettings,
+    job_id: str,
+    *,
+    outcome: str,
+    worker_outcome: str,
+    lease_id: object | None = None,
+    terminal: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    report: dict[str, object] = {
+        "translator_job_id": job_id,
+        "outcome": outcome,
+        "worker_outcome": worker_outcome,
+    }
+    if isinstance(lease_id, str):
+        report["lease_id"] = lease_id
+    if terminal is not None:
+        report["terminal_state"] = terminal.get("state")
+        report["terminal_event"] = terminal.get("event_kind")
+        if terminal.get("event_kind") == "succeeded":
+            report["canonical_output_path"] = str(
+                settings.output_dir / "p1c" / job_id / "output.mp4"
+            )
+    return report
+
+
+def _exit_code(report: Mapping[str, object]) -> int:
+    if report.get("outcome") in {"no_work", "succeeded"}:
+        return 0
+    if report.get("outcome") in {"failed", "rejected", "review_required"}:
+        return 1
+    return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Canonical Translator P1C runner")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    once = subparsers.add_parser("once", help="admit and run at most one canonical job")
+    once.add_argument("--translator-job-id")
+    args = parser.parse_args(argv)
+    try:
+        settings = load_p1c_settings(require_control_plane=True)
+        report = run_canonical_once(settings, translator_job_id=args.translator_job_id)
+    except Exception as error:
+        report = {"outcome": "error", "diagnostic_summary": str(error)[:2048]}
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+        return 2
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return _exit_code(report)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
