@@ -30,6 +30,9 @@ except ImportError:  # Allows `verify` to explain the environment before the vir
         return False
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
+_CANONICAL_REUP_MEDIA_RE = re.compile(
+    r"^reup-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.mp4$"
+)
 _nllb_components: tuple[Any, Any] | None = None
 _whisper_model: Any | None = None          # Cache WhisperModel giữa các job
 _rapidocr_engine: Any | None = None        # Cache RapidOCR engine giữa các segment
@@ -152,6 +155,8 @@ def scan_multi_channel_raw(base_dirs: list[Path] | None = None) -> list[dict[str
         for p in base.rglob("*"):
             if p.suffix.lower() not in VIDEO_EXTENSIONS:
                 continue
+            if _CANONICAL_REUP_MEDIA_RE.fullmatch(p.name):
+                continue
             if not p.is_file() or p.name.startswith("_") or str(p.resolve()) in seen:
                 continue
             seen.add(str(p.resolve()))
@@ -175,6 +180,8 @@ def scan_multi_channel_raw(base_dirs: list[Path] | None = None) -> list[dict[str
             # Versioned bridge sidecars are a readiness contract. Legacy/manual
             # files remain usable without a sidecar, but an explicit incomplete
             # handoff is never shown as a completed DUBVI input.
+            if meta_data.get("handoff_schema_version") == 2:
+                continue
             if "handoff_schema_version" in meta_data and meta_data.get("handoff_status") != "complete":
                 continue
                         

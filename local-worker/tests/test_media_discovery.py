@@ -104,6 +104,27 @@ class MediaDiscoveryTests(unittest.TestCase):
         self.assertFalse(items[0]["has_meta"])
         self.assertIsNone(items[0]["handoff_schema_version"])
 
+    def test_canonical_p1c_reup_media_without_sidecar_is_not_discovered(self) -> None:
+        self._write_video(
+            self.media_dir / "channel-a",
+            "reup-22222222-2222-4222-8222-222222222222.mp4",
+        )
+
+        self.assertEqual([], scan_multi_channel_raw([self.media_dir]))
+
+    def test_canonical_p1c_reup_v2_handoff_is_not_discovered(self) -> None:
+        profile_dir = self.media_dir / "channel-a"
+        video = self._write_video(
+            profile_dir,
+            "reup-22222222-2222-4222-8222-222222222222.mp4",
+        )
+        (profile_dir / f"{video.stem}.meta.json").write_text(
+            json.dumps({"handoff_schema_version": 2, "handoff_status": "complete"}),
+            encoding="utf-8",
+        )
+
+        self.assertEqual([], scan_multi_channel_raw([self.media_dir]))
+
 
 if __name__ == "__main__":
     unittest.main()
