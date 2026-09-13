@@ -35,12 +35,12 @@ class LocalizedMaskPlanTests(unittest.TestCase):
         document = localized_masking.build_mask_qc(plan_count=100, applied_count=99, residual_count=1)
         self.assertEqual({"schemaVersion", "plannedRegions", "appliedRegions", "residualCjkRegions", "needsReview"}, set(document))
         self.assertTrue(document["needsReview"])
-        self.assertLessEqual(document["plannedRegions"], 64)
+        self.assertEqual(100, document["plannedRegions"])
 
     def test_masked_video_is_local_and_source_preserving(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source, target = root / "source.mp4", root / "masked.mp4"
+            source, target = root / "source.mp4", root / "masked.mkv"
             writer = cv2.VideoWriter(str(source), cv2.VideoWriter_fourcc(*"mp4v"), 2, (64, 48))
             for _ in range(4):
                 writer.write(np.full((48, 64, 3), 120, dtype=np.uint8))

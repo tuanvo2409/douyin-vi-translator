@@ -18,6 +18,10 @@ import requests
 logger = logging.getLogger("dubvi_worker.llm_translator")
 
 PAGE_PERSONAS: Dict[str, Dict[str, Any]] = {
+    "neutral": {
+        "name": "TRUNG TÍNH",
+        "style_prompt": "🎯 HỒ SƠ TRUNG TÍNH: Dịch trung thành, tiếng Việt nói tự nhiên, giữ nguyên ý định người nói. Không thêm tiếng lóng, hài hước, hook hoặc drama.",
+    },
     "page_giai_cuu_chuong_lon": {
         "name": "Giải Cứu Chuồng Lợn (Before-After & Review Gia Dụng)",
         "tone": "Hài hước, tự trào bừa bộn, mê dọn phòng kiểu lười, review đồ gia dụng rác vs chân ái, phòng nano.",
@@ -46,7 +50,7 @@ PAGE_PERSONAS: Dict[str, Dict[str, Any]] = {
 
 
 def build_system_prompt(channel_profile: Optional[str] = None) -> str:
-    persona_key = "page_giai_cuu_chuong_lon"
+    persona_key = "neutral"
     if channel_profile:
         cleaned = channel_profile.lower().replace(" ", "_").replace("-", "_")
         if "goc_tro" in cleaned or "bat_on" in cleaned:
@@ -115,7 +119,7 @@ def normalize_context_card(card: Any) -> Dict[str, Any]:
     if not isinstance(card, dict):
         return {}
     normalized: Dict[str, Any] = {}
-    for key in ("pronouns", "names", "relationships", "locations"):
+    for key in ("pronouns", "names", "relationships", "locations", "glossaryChoices"):
         value = card.get(key)
         if isinstance(value, dict):
             clean = {str(k)[:80]: str(v)[:120] for k, v in value.items() if str(k).strip() and str(v).strip()}
@@ -123,6 +127,22 @@ def normalize_context_card(card: Any) -> Dict[str, Any]:
                 normalized[key] = dict(list(clean.items())[:32])
     encoded = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
     return normalized if len(encoded.split()) <= 350 else {}
+
+
+def advance_context_card(card: Any, finalized: List[Dict[str, Any]], glossary: tuple[Dict[str, Any], ...]) -> Dict[str, Any]:
+    """Carry only observed, explicitly configured glossary choices into the next batch."""
+    updated = normalize_context_card(card)
+    choices = dict(updated.get("glossaryChoices", {}))
+    for cue in finalized:
+        source, translated = _source_text(cue), cue.get("translatedTextVi")
+        if not isinstance(translated, str):
+            continue
+        for entry in glossary:
+            if entry["source"] in source and entry["target"] in translated:
+                choices[entry["source"]] = entry["target"]
+    if choices:
+        updated["glossaryChoices"] = dict(list(choices.items())[:32])
+    return normalize_context_card(updated)
 
 
 def build_contextual_batches(
@@ -195,7 +215,7 @@ def validate_translation_response(cues: List[Dict[str, Any]], document: Any) -> 
         if not isinstance(item, dict) or not isinstance(item.get("position"), int):
             raise ValueError("malformed translation item")
         position, text = item["position"], item.get("translatedTextVi")
-        if position not in expected or position in translated or not isinstance(text, str) or not text.strip():
+        if position not in expected or position in translated or not is_valid_translation_text(text):
             raise ValueError("invalid translation positions")
         translated[position] = text.strip()
     if set(translated) != expected:
@@ -203,9 +223,15 @@ def validate_translation_response(cues: List[Dict[str, Any]], document: Any) -> 
     return translated
 
 
+def is_valid_translation_text(text: Any) -> bool:
+    return isinstance(text, str) and bool(text.strip()) and not bool(re.search(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", text))
+
+
 def refine_for_tts_overflow(
     segment: Dict[str, Any], *, api_key: Optional[str], measured_ms: int,
     model: str = "gemini-flash-lite-latest", channel_profile: Optional[str] = None,
+    previous: Optional[List[Dict[str, Any]]] = None, following: Optional[List[Dict[str, Any]]] = None,
+    context_card: Optional[Dict[str, Any]] = None, glossary: tuple[Dict[str, Any], ...] = (),
 ) -> str | None:
     """One bounded semantic retry for a measured TTS overflow; never truncate text locally."""
     active_key = gemini_pool.get_key() or api_key
@@ -213,14 +239,9 @@ def refine_for_tts_overflow(
         return None
     slot_ms = max(1, int(segment.get("endMs", 0)) - int(segment.get("startMs", 0)))
     position = int(segment.get("position", 0))
-    prompt = (
-        f"{build_system_prompt(channel_profile)}\n\n"
-        "Đây là Pass B duy nhất vì TTS đo được dài hơn slot. Giữ nguyên nghĩa, sự kiện, chủ thể và quan hệ; "
-        "chỉ viết tự nhiên ngắn hơn. Không được bịa hoặc bỏ ý quan trọng.\n"
-        f"SOURCE={json.dumps(_source_text(segment), ensure_ascii=False)}\n"
-        f"CURRENT_VI={json.dumps(str(segment.get('translatedTextVi') or ''), ensure_ascii=False)}\n"
-        f"MEASURED_MS={int(measured_ms)} SLOT_MS={slot_ms} MAX_WORDS={estimate_max_words(slot_ms)}\n"
-        f"Return only {{\"translations\":[{{\"position\":{position},\"translatedTextVi\":\"...\"}}]}}"
+    prompt = build_timing_repair_prompt(
+        segment, measured_ms=measured_ms, previous=previous or [], following=following or [],
+        context_card=context_card or {}, glossary=glossary, channel_profile=channel_profile,
     )
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={active_key}"
     try:
@@ -244,6 +265,27 @@ def refine_for_tts_overflow(
     except Exception as error:
         logger.warning("Gemini timing pass failed: %s", type(error).__name__)
     return None
+
+
+def build_timing_repair_prompt(
+    segment: Dict[str, Any], *, measured_ms: int, previous: List[Dict[str, Any]], following: List[Dict[str, Any]],
+    context_card: Dict[str, Any], glossary: tuple[Dict[str, Any], ...], channel_profile: Optional[str] = None,
+) -> str:
+    position = int(segment.get("position", 0))
+    slot_ms = max(1, int(segment.get("endMs", 0)) - int(segment.get("startMs", 0)))
+    return (
+        f"{build_system_prompt(channel_profile)}\n\n"
+        "Đây là Pass B duy nhất vì TTS đo được dài hơn slot. Giữ nguyên nghĩa, sự kiện, chủ thể và quan hệ; "
+        "chỉ viết tự nhiên ngắn hơn. Không được bịa hoặc bỏ ý quan trọng.\n"
+        f"SOURCE={json.dumps(_source_text(segment), ensure_ascii=False)}\n"
+        f"CURRENT_VI={json.dumps(str(segment.get('translatedTextVi') or ''), ensure_ascii=False)}\n"
+        f"PREVIOUS={json.dumps(_prompt_cues(previous, True), ensure_ascii=False)}\n"
+        f"FOLLOWING_SOURCE_ONLY={json.dumps(_prompt_cues(following), ensure_ascii=False)}\n"
+        f"CONTEXT_CARD={json.dumps(normalize_context_card(context_card), ensure_ascii=False)}\n"
+        f"GLOSSARY={json.dumps(glossary, ensure_ascii=False)}\n"
+        f"MEASURED_MS={int(measured_ms)} SLOT_MS={slot_ms} MAX_WORDS={estimate_max_words(slot_ms)}\n"
+        f"Return only {{\"translations\":[{{\"position\":{position},\"translatedTextVi\":\"...\"}}]}}"
+    )
 
 
 def translate_with_google_free(text: str) -> str:
@@ -359,6 +401,8 @@ def translate_with_gemini(
             pos = seg.get("position", idx)
             if pos in trans_map and trans_map[pos]:
                 seg["translatedTextVi"] = trans_map[pos]
+        if trans_map:
+            bounded_context = advance_context_card(bounded_context, chunk_segs, bounded_glossary)
         chunk_start += len(chunk_segs)
 
     return segments
@@ -407,7 +451,7 @@ def translate_with_openai_compatible(
     text_resp = data["choices"][0]["message"]["content"]
     result = json.loads(text_resp)
     
-    trans_map = {item["position"]: item["translatedTextVi"] for item in result.get("translations", [])}
+    trans_map = validate_translation_response(segments, result)
     for idx, seg in enumerate(segments):
         pos = seg.get("position", idx)
         if pos in trans_map and trans_map[pos]:
@@ -416,10 +460,9 @@ def translate_with_openai_compatible(
 
 
 def clean_vietnamese_text(text: str) -> str:
-    """Loại bỏ triệt để mọi ký tự tiếng Trung hoặc token hán tự còn sót lại trong bản dịch."""
+    """Normalize whitespace only; invalid provider text must never be silently mutilated."""
     if not text:
         return ""
-    text = re.sub(r'[\u4e00-\u9fff]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
 
@@ -482,10 +525,15 @@ def translate_segments_native(
             if src:
                 s["translatedTextVi"] = translate_with_google_free(src)
 
-    # 5. Sanitize sạch 100% ký tự tiếng Trung còn sót lại
+    # 5. Preserve invalid provider text as a visible review/fallback condition;
+    # never delete CJK characters to manufacture an apparently valid sentence.
     for s in segments:
-        if s.get("translatedTextVi"):
-            s["translatedTextVi"] = clean_vietnamese_text(s["translatedTextVi"])
+        translated = s.get("translatedTextVi")
+        if translated and not is_valid_translation_text(translated):
+            s["translatedTextVi"] = ""
+            s["needsReview"] = True
+        elif translated:
+            s["translatedTextVi"] = clean_vietnamese_text(translated)
 
     return segments
 

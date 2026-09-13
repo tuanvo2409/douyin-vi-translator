@@ -171,6 +171,7 @@ def build_canonical_runtime_config(
         "ocr": {
             "enabled": True,
             "sampleFrames": 3,
+            "discoveryFrames": 8,
             "minConfidence": 65,
             "llmCorrection": False,
         },

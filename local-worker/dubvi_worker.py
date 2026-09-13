@@ -675,6 +675,11 @@ def clamp_and_bridge_audio_gaps(
     return adjusted_clips
 
 
+def preserve_source_timeline(audio_clips: list[dict[str, Any]]) -> list[tuple[int, Any]]:
+    """Canonical jobs retain source cue starts; legacy gap clamping stays opt-in elsewhere."""
+    return [(int(clip["startMs"]), clip["fitted_voice"]) for clip in audio_clips]
+
+
 def draw_ass(
     segments: list[dict[str, Any]],
     video_width: int,
@@ -837,9 +842,18 @@ def render_video(
         "-filter_complex", ";".join(filters),
         "-map", "[video]", "-map", "[finalaudio]",
         "-c:v", "libx264", "-preset", "veryfast", "-threads", "2", "-crf", "20",
-        "-c:a", "aac", "-shortest", "-movflags", "+faststart", str(output)
+        "-c:a", "aac",
     ])
+    command.extend(build_render_command(str(source), str(output), str(ass_path), audio_segments, audio_mode, ffprobe_duration(source)))
     run(command)
+
+
+def build_render_command(
+    source: str, output: str, ass_path: str, audio_segments: list[tuple[Path, int]] | list[Any], audio_mode: str, source_duration: float,
+) -> list[str]:
+    """Return the bounded output tail: source visual duration always wins over short speech."""
+    del source, ass_path, audio_segments, audio_mode
+    return ["-t", f"{max(0.0, source_duration):.3f}", "-movflags", "+faststart", output]
 
 
 def generate_video_thumbnail(
@@ -967,7 +981,9 @@ def process_job(
         rpc.report(job_id, "render_approved", 84, status="processing")
         ass_path = job_dir / "subtitles_vi_reviewed.ass"
         srt_path = job_dir / "subtitles_vi_reviewed.srt"
-        visual_source = job_dir / "masked_source.mp4"
+        visual_source = job_dir / "masked_source_repaired.mkv"
+        if not visual_source.is_file():
+            visual_source = job_dir / "masked_source.mkv"
         if not visual_source.is_file():
             visual_source = source
         width, height = ffprobe_dimensions(visual_source)
@@ -975,6 +991,8 @@ def process_job(
         draw_srt(reviewed_segments, srt_path)
         output = job_dir / f"{source.stem}_vi_reviewed.mp4"
         render_video(visual_source, output, ass_path, voice_inputs, config["roi"], config["audioMode"])
+        if visual_source != source:
+            visual_source.unlink(missing_ok=True)
         log_job(f"Render từ segment đã duyệt hoàn tất: {output.name}")
         rpc.report(job_id, "complete", 100, status="complete", output_path=str(output))
         return
@@ -1037,7 +1055,10 @@ def process_job(
     visual_source = source
     mask_review_needed = False
     if config["ocr"]["enabled"]:
-        from localized_masking import apply_localized_masks, build_mask_plan, build_mask_qc
+        from auto_roi import sparse_whole_frame_discovery
+        from localized_masking import (
+            apply_localized_masks, build_mask_plan, build_mask_qc, expand_affected_plan, stratified_sample_indices,
+        )
 
         detections = [
             detection
@@ -1045,22 +1066,40 @@ def process_job(
             for detection in segment.get("ocrAuditJson", {}).get("detections", [])
             if isinstance(detection, dict)
         ]
+        detections.extend(sparse_whole_frame_discovery(source, int(config["ocr"].get("discoveryFrames", 8))))
         width, height = ffprobe_dimensions(source)
         mask_plan = build_mask_plan(detections, (width, height))
         mask_qc = build_mask_qc(plan_count=len(mask_plan), applied_count=0, residual_count=0)
         if mask_plan:
-            masked_source = job_dir / "masked_source.mp4"
+            masked_source = job_dir / "masked_source.mkv"
             try:
                 mask_qc = apply_localized_masks(source, masked_source, mask_plan)
-                # Sample the repaired source once per affected cue (bounded) before overlay.
-                residual = 0
-                affected = [segment for segment in segments if segment.get("ocrAuditJson", {}).get("detections")][:12]
-                for segment in affected:
-                    check = ocr_consensus_details(masked_source, segment, config["roi"], 1)
-                    residual += len(check.get("detections", []))
-                mask_qc = build_mask_qc(
-                    plan_count=len(mask_plan), applied_count=int(mask_qc["appliedRegions"]), residual_count=residual,
-                )
+                # Stratify repair QC across the complete affected timeline, not its head.
+                affected = [segment for segment in segments if segment.get("ocrAuditJson", {}).get("detections")]
+                def sampled_residual(path: Path) -> list[dict[str, Any]]:
+                    residual_items: list[dict[str, Any]] = []
+                    for sample_index in stratified_sample_indices(len(affected), 12):
+                        residual_items.extend(ocr_consensus_details(path, affected[sample_index], config["roi"], 1).get("detections", []))
+                    residual_items.extend(sparse_whole_frame_discovery(path, int(config["ocr"].get("discoveryFrames", 8))))
+                    return residual_items
+
+                residual = sampled_residual(masked_source)
+                retry_plan = expand_affected_plan(mask_plan, residual, (width, height))
+                if retry_plan:
+                    repaired_source = job_dir / "masked_source_repaired.mkv"
+                    retry_qc = apply_localized_masks(masked_source, repaired_source, retry_plan)
+                    masked_source.unlink(missing_ok=True)
+                    masked_source = repaired_source
+                    residual = sampled_residual(masked_source)
+                    mask_qc = build_mask_qc(
+                        plan_count=len(mask_plan),
+                        applied_count=int(mask_qc["appliedRegions"]) + int(retry_qc["appliedRegions"]),
+                        residual_count=len(residual),
+                    )
+                else:
+                    mask_qc = build_mask_qc(
+                        plan_count=len(mask_plan), applied_count=int(mask_qc["appliedRegions"]), residual_count=len(residual),
+                    )
                 visual_source = masked_source
                 mask_review_needed = bool(mask_qc["needsReview"])
             except Exception as exc:
@@ -1166,7 +1205,10 @@ def process_job(
     raw_clips: list[dict[str, Any]] = []
     review_needed = mask_review_needed
     timing_pass_b: list[dict[str, Any]] = []
-    for segment in segments:
+    from llm_translator import normalize_context_card, normalize_glossary
+    timing_context = normalize_context_card(config.get("localizationContext"))
+    timing_glossary = normalize_glossary(config.get("localizationGlossary"))
+    for segment_index, segment in enumerate(segments):
         raw_voice = job_dir / f"voice_{segment['position']:03d}_raw.mp3"
         fitted_voice = job_dir / f"voice_{segment['position']:03d}.mp3"
         synthesize(segment["translatedTextVi"], config["voice"]["name"], raw_voice, settings)
@@ -1177,6 +1219,9 @@ def process_job(
             replacement = refine_for_tts_overflow(
                 segment, api_key=settings.gemini_api_key, measured_ms=duration_ms,
                 channel_profile=str(config.get("channelProfile") or ""),
+                previous=segments[max(0, segment_index - 2):segment_index],
+                following=segments[segment_index + 1:segment_index + 3],
+                context_card=timing_context, glossary=timing_glossary,
             )
             timing_pass_b.append({"position": int(segment["position"]), "attempted": True, "accepted": bool(replacement)})
             if replacement:
@@ -1197,14 +1242,9 @@ def process_job(
             "durationSec": duration_ms / 1000.0,
         })
 
-    # Áp dụng thuật toán Smart Gap Clamping để khống chế khoảng câm <= 600ms
-    clamped_clips = clamp_and_bridge_audio_gaps(raw_clips, max_gap_ms=600, min_pause_ms=250)
-    voice_inputs: list[tuple[Path, int]] = []
-    for c in clamped_clips:
-        seg = c["segment"]
-        seg["startMs"] = c["startMs"]
-        seg["endMs"] = c["endMs"]
-        voice_inputs.append((c["fitted_voice"], c["startMs"]))
+    # P1C preserves the source timeline; legacy Studio/watchdog may still opt
+    # into gap clamping, but canonical delivery never rewrites cue positions.
+    voice_inputs = [(Path(path), start_ms) for start_ms, path in preserve_source_timeline(raw_clips)]
 
     rpc.replace_segments(job_id, segments)
     manifest_path = job_dir / "segments.json"
@@ -1247,6 +1287,8 @@ def process_job(
         visual_source, output, ass_path, voice_inputs, config["roi"], config["audioMode"],
         clean_bgm_path=clean_bgm_wav if clean_bgm_wav.is_file() else None
     )
+    if visual_source != source:
+        visual_source.unlink(missing_ok=True)
     log_job(f"Render hoàn tất: {output.name}")
     rpc.report(job_id, "complete", 100, status="complete", output_path=str(output))
 

@@ -99,13 +99,68 @@ class TemporalCJKTracker:
         self._tracks = [track for track in self._tracks if track["scene_id"] == scene_id]
         for region in regions:
             clamped = _clamp_bbox(region, self.frame_size)
-            self._tracks.append({"bbox": clamped, "scene_id": scene_id, "last_seen_ms": int(timestamp_ms)})
+            matched = next((track for track in self._tracks if _overlaps(track["bbox"], clamped)), None)
+            if matched is None:
+                self._tracks.append({"bbox": clamped, "scene_id": scene_id, "last_seen_ms": int(timestamp_ms)})
+            else:
+                matched["bbox"] = clamped
+                matched["last_seen_ms"] = int(timestamp_ms)
 
     def active_regions(self, timestamp_ms: int, scene_id: int) -> list[tuple[int, int, int, int]]:
         return [
             track["bbox"] for track in self._tracks
             if track["scene_id"] == scene_id and int(timestamp_ms) - track["last_seen_ms"] <= self.hold_ms
         ]
+
+
+def _overlaps(left: tuple[int, int, int, int], right: tuple[int, int, int, int]) -> bool:
+    return min(left[2], right[2]) > max(left[0], right[0]) and min(left[3], right[3]) > max(left[1], right[1])
+
+
+def discover_cjk_regions(samples: list[dict], frame_size: tuple[int, int]) -> list[dict]:
+    """Normalize sparse whole-frame OCR records without assuming a bottom band."""
+    discoveries: list[dict] = []
+    for sample in samples:
+        timestamp = sample.get("timestampMs") if isinstance(sample, dict) else None
+        items = sample.get("items") if isinstance(sample, dict) else None
+        if not isinstance(timestamp, int) or not isinstance(items, list):
+            continue
+        for group in group_cjk_regions(items, frame_size):
+            discoveries.append({
+                "timestampMs": timestamp, "bbox": group["bbox"],
+                "text": "".join(str(item.get("text") or "") for item in group["detections"]),
+            })
+    return sorted(discoveries, key=lambda item: (item["timestampMs"], item["bbox"][1], item["bbox"][0]))
+
+
+def sparse_whole_frame_discovery(video_path: Path, sample_count: int = 8) -> list[dict]:
+    """Use a bounded number of downscaled full-frame OCR samples to find non-ROI CJK."""
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        return []
+    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+    width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    samples: list[dict] = []
+    try:
+        for index in range(max(1, min(12, sample_count))):
+            frame_index = int((frame_count - 1) * index / max(1, min(12, sample_count) - 1))
+            capture.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_index))
+            ok, frame = capture.read()
+            if not ok:
+                continue
+            scale = min(1.0, 960.0 / max(1, frame.shape[1]))
+            scanned = cv2.resize(frame, None, fx=scale, fy=scale) if scale < 1.0 else frame
+            response, _ = get_ocr_instance()(scanned)
+            items = []
+            for item in response or []:
+                if len(item) >= 3 and float(item[2]) >= 0.45 and contains_cjk_text(item[1]):
+                    quad = map_ocr_quad_to_source(item[0], (0, 0), scale, (width, height))
+                    items.append({"text": str(item[1]), "bbox": _bbox_from_quad(quad), "confidence": float(item[2])})
+            samples.append({"timestampMs": int(frame_index * 1000 / fps), "items": items})
+    finally:
+        capture.release()
+    return discover_cjk_regions(samples, (width, height))
 
 def get_ocr_instance():
     global _OCR_INSTANCE

@@ -8,7 +8,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from auto_roi import contains_cjk_text, dilate_region, group_cjk_regions
+from auto_roi import TemporalCJKTracker, contains_cjk_text, dilate_region, group_cjk_regions
 
 
 def build_mask_plan(detections: list[dict[str, Any]], frame_size: tuple[int, int]) -> list[dict[str, Any]]:
@@ -25,7 +25,7 @@ def build_mask_plan(detections: list[dict[str, Any]], frame_size: tuple[int, int
     for timestamp, items in sorted(by_timestamp.items()):
         for group in group_cjk_regions(items, frame_size):
             plan.append({"timestampMs": timestamp, "bbox": dilate_region(group["bbox"], frame_size)})
-    return plan[:64]
+    return plan
 
 
 def repair_region(frame: np.ndarray, bbox: tuple[int, int, int, int], clean_plate: np.ndarray | None) -> tuple[np.ndarray, str]:
@@ -53,9 +53,9 @@ def build_mask_qc(*, plan_count: int, applied_count: int, residual_count: int) -
     """Diagnostic-only QC: counts are bounded and contain neither OCR text nor secrets."""
     return {
         "schemaVersion": 1,
-        "plannedRegions": min(64, max(0, int(plan_count))),
-        "appliedRegions": min(64, max(0, int(applied_count))),
-        "residualCjkRegions": min(64, max(0, int(residual_count))),
+        "plannedRegions": max(0, int(plan_count)),
+        "appliedRegions": max(0, int(applied_count)),
+        "residualCjkRegions": max(0, int(residual_count)),
         "needsReview": residual_count > 0,
     }
 
@@ -66,6 +66,30 @@ def _scene_changed(previous: np.ndarray | None, current: np.ndarray) -> bool:
     previous_hist = cv2.calcHist([previous], [0], None, [16], [0, 256])
     current_hist = cv2.calcHist([current], [0], None, [16], [0, 256])
     return cv2.compareHist(previous_hist, current_hist, cv2.HISTCMP_BHATTACHARYYA) > 0.45
+
+
+def stratified_sample_indices(total: int, limit: int) -> list[int]:
+    if total <= 0 or limit <= 0:
+        return []
+    count = min(total, limit)
+    return sorted({int(round((total - 1) * index / max(1, count - 1))) for index in range(count)})
+
+
+def expand_affected_plan(plan: list[dict[str, Any]], residual: list[dict[str, Any]], frame_size: tuple[int, int]) -> list[dict[str, Any]]:
+    """Build one conservative retry plan only for residual CJK tracks."""
+    retry: list[dict[str, Any]] = []
+    for item in build_mask_plan(residual, frame_size):
+        x1, y1, x2, y2 = item["bbox"]
+        retry.append({"timestampMs": item["timestampMs"], "bbox": dilate_region((x1 - 4, y1 - 4, x2 + 4, y2 + 4), frame_size)})
+    return retry
+
+
+def lossless_transport_command(source: str, target: str, width: int, height: int, fps: float) -> list[str]:
+    return [
+        "ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-video_size", f"{width}x{height}",
+        "-framerate", f"{fps:.6f}", "-i", "pipe:0", "-i", source, "-map", "0:v", "-map", "1:a?",
+        "-c:v", "ffv1", "-level", "3", "-c:a", "copy", target,
+    ]
 
 
 def apply_localized_masks(
@@ -80,14 +104,19 @@ def apply_localized_masks(
     width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = capture.get(cv2.CAP_PROP_FPS) or fps_hint
     target.parent.mkdir(parents=True, exist_ok=True)
-    silent_target = target.with_name(f".{target.stem}.silent.mp4")
-    writer = cv2.VideoWriter(str(silent_target), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
-    if not writer.isOpened():
+    transport = subprocess.Popen(
+        lossless_transport_command(str(source), str(target), width, height, fps), stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    if transport.stdin is None:
         capture.release()
-        raise RuntimeError("unable to create localized subtitle repair video")
+        raise RuntimeError("unable to create localized subtitle repair transport")
     previous_clean: np.ndarray | None = None
     previous_source: np.ndarray | None = None
-    scene_started_ms = 0
+    tracker = TemporalCJKTracker(hold_ms=900, frame_size=(width, height))
+    plan_index = 0
+    ordered_plan = sorted(plan, key=lambda item: int(item["timestampMs"]))
+    scene_id = 0
     applied = 0
     index = 0
     try:
@@ -98,29 +127,25 @@ def apply_localized_masks(
             timestamp = int(index * 1000 / fps)
             if _scene_changed(previous_source, frame):
                 previous_clean = None
-                scene_started_ms = timestamp
-            active = [
-                item["bbox"] for item in plan
-                if item["timestampMs"] >= scene_started_ms and abs(timestamp - item["timestampMs"]) <= 700
-            ]
+                scene_id += 1
+            while plan_index < len(ordered_plan) and int(ordered_plan[plan_index]["timestampMs"]) <= timestamp:
+                item = ordered_plan[plan_index]
+                tracker.observe(int(item["timestampMs"]), [item["bbox"]], scene_id)
+                plan_index += 1
+            active = tracker.active_regions(timestamp, scene_id)
             repaired = frame
             for bbox in active:
                 repaired, _method = repair_region(repaired, bbox, previous_clean)
                 applied += 1
             previous_clean = repaired.copy()
             previous_source = frame.copy()
-            writer.write(repaired)
+            transport.stdin.write(repaired.tobytes())
             index += 1
     finally:
         capture.release()
-        writer.release()
-    if not silent_target.is_file() or silent_target.stat().st_size == 0:
+        transport.stdin.close()
+    if transport.wait() != 0:
         raise RuntimeError("localized subtitle repair produced no video")
-    result = subprocess.run(
-        ["ffmpeg", "-y", "-i", str(silent_target), "-i", str(source), "-map", "0:v", "-map", "1:a?", "-c:v", "copy", "-c:a", "copy", str(target)],
-        capture_output=True,
-    )
-    silent_target.unlink(missing_ok=True)
-    if result.returncode != 0 or not target.is_file() or target.stat().st_size == 0:
-        raise RuntimeError("localized subtitle repair could not preserve source audio")
+    if not target.is_file() or target.stat().st_size == 0:
+        raise RuntimeError("localized subtitle repair produced no video")
     return build_mask_qc(plan_count=len(plan), applied_count=applied, residual_count=0)
