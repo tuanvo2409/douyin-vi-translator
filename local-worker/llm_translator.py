@@ -209,11 +209,11 @@ def translate_with_gemini(
                         break
                 except requests.exceptions.HTTPError as he:
                     status = he.response.status_code if he.response is not None else 500
-                    logger.warning(f"⚠️ Gemini Key '...{active_key[-6:]}' bị lỗi HTTP {status}. Đang đổi key khác...")
+                    logger.warning(f"⚠️ Gemini model {m} gặp HTTP {status}. Đang đổi key khác...")
                     gemini_pool.report_error(active_key, status)
                     break
                 except Exception as e:
-                    logger.warning(f"⚠️ Gemini {m} với key '...{active_key[-6:]}' lỗi: {e}")
+                    logger.warning(f"⚠️ Gemini model {m} lỗi kiểu {type(e).__name__}")
                     continue
                     
             if success and trans_map:
@@ -309,7 +309,7 @@ def translate_segments_native(
                 channel_profile=channel_profile
             )
         except Exception as exc:
-            logger.warning(f"Lỗi khi gọi Gemini API ({exc})...")
+            logger.warning(f"Lỗi khi gọi Gemini API ({type(exc).__name__})...")
 
     # 2. Thử DeepSeek API nếu được cấu hình
     if not all(s.get("translatedTextVi") for s in segments) and deepseek_key:
@@ -321,7 +321,7 @@ def translate_segments_native(
                 model="deepseek-chat"
             )
         except Exception as exc:
-            logger.warning(f"Lỗi khi gọi DeepSeek API ({exc})...")
+            logger.warning(f"Lỗi khi gọi DeepSeek API ({type(exc).__name__})...")
 
     # 3. Thử OpenAI API nếu được cấu hình
     if not all(s.get("translatedTextVi") for s in segments) and openai_key:
@@ -333,7 +333,7 @@ def translate_segments_native(
                 model="gpt-4o-mini"
             )
         except Exception as exc:
-            logger.warning(f"Lỗi khi gọi OpenAI API ({exc})...")
+            logger.warning(f"Lỗi khi gọi OpenAI API ({type(exc).__name__})...")
 
     # 4. Emergency Fallback: Tự động dịch các câu còn lại qua Google Translate nếu toàn bộ LLM key bị giới hạn 429
     untranslated = [s for s in segments if not s.get("translatedTextVi")]
@@ -445,7 +445,7 @@ YÊU CẦU BẮT BUỘC:
                         h["text"] = clean_vietnamese_text(h.get("text", ""))
                     return hooks
         except Exception as e:
-            logger.warning(f"Lỗi khi sinh Viral Hook bằng {model_name}: {e}")
+            logger.warning(f"Lỗi khi sinh Viral Hook bằng {model_name}: {type(e).__name__}")
             continue
 
     fallback_hooks = [

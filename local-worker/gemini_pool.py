@@ -105,10 +105,10 @@ class GeminiKeyPool:
             return
         if status_code == 429:
             self.cooldowns[key] = time.time() + 60.0
-            logger.warning(f"🔑 Key '...{key[-6:]}' bị 429 Rate Limit. Đưa vào cooldown 60s.")
+            logger.warning("🔑 Gemini key bị 429 Rate Limit. Đưa vào cooldown 60s.")
         elif status_code in (400, 403):
             self.cooldowns[key] = time.time() + 3600.0
-            logger.warning(f"🔑 Key '...{key[-6:]}' lỗi {status_code}. Đưa vào cooldown 1h.")
+            logger.warning(f"🔑 Gemini key lỗi HTTP {status_code}. Đưa vào cooldown 1h.")
 
     def get_stats(self) -> Dict[str, Any]:
         now = time.time()

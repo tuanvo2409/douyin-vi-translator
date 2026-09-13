@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import logging
 import os
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ import p1c_worker
 from dubvi_engine_contract import canonical_json_bytes
 from p1c_config import P1CSettings
 from p1c_intake import accept_next_translator_job, accept_translator_envelope
+import llm_translator
 from p1c_processing import (
     CanonicalChildHandle,
     CanonicalOutputConflict,
@@ -251,6 +253,45 @@ class TranslatorDemoRunnerTests(unittest.TestCase):
              patch.object(p1c_processing.subprocess, "Popen", return_value=process) as popen:
             spawn_processing_child(self.settings, document)
         self.assertEqual("do-not-print", popen.call_args.kwargs["env"]["GEMINI_API_KEY"])
+
+    def test_provider_key_material_is_absent_from_captured_logs(self) -> None:
+        secret = "TEST_SECRET_123456"
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        logger = llm_translator.logger
+        pool_logger = logging.getLogger("dubvi.gemini_pool")
+        previous_level = logger.level
+        previous_pool_level = pool_logger.level
+        previous_keys = list(llm_translator.gemini_pool.keys)
+        previous_cooldowns = dict(llm_translator.gemini_pool.cooldowns)
+        previous_index = llm_translator.gemini_pool.current_idx
+        logger.addHandler(handler)
+        pool_logger.addHandler(handler)
+        logger.setLevel(logging.WARNING)
+        pool_logger.setLevel(logging.WARNING)
+        try:
+            llm_translator.gemini_pool.keys = []
+            with patch.object(
+                llm_translator,
+                "translate_with_gemini_single_chunk",
+                side_effect=RuntimeError("synthetic provider failure"),
+            ):
+                llm_translator.translate_with_gemini(
+                    [{"position": 0, "startMs": 0, "endMs": 1000, "sourceTextZh": "x"}],
+                    api_key=secret,
+                )
+            llm_translator.gemini_pool.report_error(secret, 429)
+        finally:
+            llm_translator.gemini_pool.keys = previous_keys
+            llm_translator.gemini_pool.cooldowns = previous_cooldowns
+            llm_translator.gemini_pool.current_idx = previous_index
+            logger.removeHandler(handler)
+            pool_logger.removeHandler(handler)
+            logger.setLevel(previous_level)
+            pool_logger.setLevel(previous_pool_level)
+        logs = output.getvalue()
+        self.assertNotIn(secret, logs)
+        self.assertNotIn(secret[-6:], logs)
 
     def test_main_once_prints_bounded_machine_result(self) -> None:
         with patch.object(p1c_worker, "load_p1c_settings", return_value=self.settings), \
