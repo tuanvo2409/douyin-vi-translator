@@ -1045,7 +1045,7 @@ def main_page():
                 if not fit_v.is_file() or fit_v.stat().st_size < 100:
                     try:
                         synthesize(vi_text, state["selected_voice"], raw_v, settings)
-                        fit_ms, _ = fit_voice(raw_v, fit_v, slot_ms, max_tempo=1.35)
+                        fit_ms, _ = fit_voice(raw_v, fit_v, slot_ms, max_tempo=1.12)
                     except Exception as ex:
                         logging.getLogger("dubvi-worker").warning(f"Voice {idx} error: {ex}")
                         fit_ms = slot_ms

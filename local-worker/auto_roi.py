@@ -6,6 +6,106 @@ from pathlib import Path
 from rapidocr_onnxruntime import RapidOCR
 
 _OCR_INSTANCE = None
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def contains_cjk_text(text: object) -> bool:
+    """Return whether untrusted OCR text contains a Han character."""
+    return isinstance(text, str) and bool(_CJK_RE.search(text))
+
+
+def _clamp_bbox(bbox: tuple[int, int, int, int], frame_size: tuple[int, int]) -> tuple[int, int, int, int]:
+    width, height = frame_size
+    x1, y1, x2, y2 = bbox
+    return (
+        max(0, min(width, int(x1))), max(0, min(height, int(y1))),
+        max(0, min(width, int(x2))), max(0, min(height, int(y2))),
+    )
+
+
+def map_ocr_quad_to_source(
+    quad: list[list[float]] | tuple[tuple[float, float], ...],
+    crop_origin: tuple[int, int],
+    enlargement: float,
+    frame_size: tuple[int, int],
+) -> tuple[tuple[int, int], ...]:
+    """Map a quadrilateral from an enlarged OCR crop back to source pixels."""
+    if enlargement <= 0 or len(quad) != 4:
+        raise ValueError("OCR quadrilateral and enlargement are required")
+    origin_x, origin_y = crop_origin
+    width, height = frame_size
+    mapped = []
+    for point in quad:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError("invalid OCR quadrilateral")
+        x = max(0, min(width, int(round(float(point[0]) / enlargement + origin_x))))
+        y = max(0, min(height, int(round(float(point[1]) / enlargement + origin_y))))
+        mapped.append((x, y))
+    return tuple(mapped)
+
+
+def _bbox_from_quad(quad: tuple[tuple[int, int], ...]) -> tuple[int, int, int, int]:
+    return min(x for x, _ in quad), min(y for _, y in quad), max(x for x, _ in quad), max(y for _, y in quad)
+
+
+def dilate_region(bbox: tuple[int, int, int, int], frame_size: tuple[int, int]) -> tuple[int, int, int, int]:
+    """Expand a detected subtitle region proportionally without leaving the frame."""
+    x1, y1, x2, y2 = _clamp_bbox(bbox, frame_size)
+    height = max(1, y2 - y1)
+    horizontal = max(4, int(round(height * 0.15)))
+    vertical = max(5, int(round(height * 0.25)))
+    return _clamp_bbox((x1 - horizontal, y1 - vertical, x2 + horizontal, y2 + vertical), frame_size)
+
+
+def group_cjk_regions(detections: list[dict], frame_size: tuple[int, int]) -> list[dict]:
+    """Combine neighboring CJK OCR boxes into small subtitle masks, never a broad band."""
+    eligible = []
+    for detection in detections:
+        bbox = detection.get("bbox") if isinstance(detection, dict) else None
+        if not contains_cjk_text(detection.get("text")) or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            continue
+        clamped = _clamp_bbox(tuple(int(value) for value in bbox), frame_size)
+        if clamped[2] > clamped[0] and clamped[3] > clamped[1]:
+            eligible.append({**detection, "bbox": clamped})
+    eligible.sort(key=lambda item: (item["bbox"][1], item["bbox"][0]))
+    groups: list[dict] = []
+    for detection in eligible:
+        x1, y1, x2, y2 = detection["bbox"]
+        merged = None
+        for group in groups:
+            gx1, gy1, gx2, gy2 = group["bbox"]
+            line_height = max(y2 - y1, gy2 - gy1)
+            same_line = min(y2, gy2) > max(y1, gy1) and x1 - gx2 <= max(20, int(line_height * 5.5))
+            stacked_lines = min(x2, gx2) > max(x1, gx1) and y1 - gy2 <= max(12, int(line_height * 1.5))
+            if same_line or stacked_lines:
+                merged = group
+                group["bbox"] = _clamp_bbox((min(x1, gx1), min(y1, gy1), max(x2, gx2), max(y2, gy2)), frame_size)
+                group["detections"].append(detection)
+                break
+        if merged is None:
+            groups.append({"bbox": (x1, y1, x2, y2), "detections": [detection]})
+    return groups
+
+
+class TemporalCJKTracker:
+    """Keep short OCR misses stable while prohibiting cross-scene mask reuse."""
+
+    def __init__(self, hold_ms: int, frame_size: tuple[int, int]) -> None:
+        self.hold_ms = max(0, int(hold_ms))
+        self.frame_size = frame_size
+        self._tracks: list[dict] = []
+
+    def observe(self, timestamp_ms: int, regions: list[tuple[int, int, int, int]], scene_id: int) -> None:
+        self._tracks = [track for track in self._tracks if track["scene_id"] == scene_id]
+        for region in regions:
+            clamped = _clamp_bbox(region, self.frame_size)
+            self._tracks.append({"bbox": clamped, "scene_id": scene_id, "last_seen_ms": int(timestamp_ms)})
+
+    def active_regions(self, timestamp_ms: int, scene_id: int) -> list[tuple[int, int, int, int]]:
+        return [
+            track["bbox"] for track in self._tracks
+            if track["scene_id"] == scene_id and int(timestamp_ms) - track["last_seen_ms"] <= self.hold_ms
+        ]
 
 def get_ocr_instance():
     global _OCR_INSTANCE

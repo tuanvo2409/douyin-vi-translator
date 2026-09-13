@@ -167,7 +167,7 @@ def build_canonical_runtime_config(
     if not isinstance(voice, str) or not voice.strip():
         raise CanonicalProcessingError("canonical CapCut voice must be nonblank")
     return {
-        "voice": {"name": voice.strip(), "maxTempo": 1.35},
+        "voice": {"name": voice.strip(), "maxTempo": 1.12},
         "ocr": {
             "enabled": True,
             "sampleFrames": 3,

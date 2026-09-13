@@ -383,6 +383,7 @@ def ocr_consensus_details(source: Path, segment: dict[str, Any], roi: dict[str, 
     if max_samples > 0:
         samples = min(samples, max_samples)
     evidence: dict[str, list[float]] = {}
+    detections: list[dict[str, Any]] = []
     for moment in sample_times(segment["startMs"], segment["endMs"], samples):
         frame_path = source.parent / f"_dubvi_ocr_{segment['position']}_{int(moment * 1000)}.jpg"
         try:
@@ -402,6 +403,23 @@ def ocr_consensus_details(source: Path, segment: dict[str, Any], roi: dict[str, 
             response, _ = engine(normalized)
             if not response:
                 continue
+            from auto_roi import contains_cjk_text, map_ocr_quad_to_source
+            for item in response:
+                if len(item) < 3:
+                    continue
+                quad, item_text, item_confidence = item[0], str(item[1]).strip(), float(item[2])
+                if item_confidence < 0.45 or not contains_cjk_text(item_text):
+                    continue
+                mapped_quad = map_ocr_quad_to_source(quad, (x, y), 2.5, (width, height))
+                detections.append({
+                    "text": item_text,
+                    "confidence": round(item_confidence, 3),
+                    "quad": mapped_quad,
+                    "bbox": (min(point[0] for point in mapped_quad), min(point[1] for point in mapped_quad), max(point[0] for point in mapped_quad), max(point[1] for point in mapped_quad)),
+                    "timestampMs": int(moment * 1000),
+                    "sourceWidth": width,
+                    "sourceHeight": height,
+                })
             text = "".join(item[1] for item in response if len(item) >= 3 and float(item[2]) >= 0.45).strip()
             confidence = sum(float(item[2]) for item in response if len(item) >= 3) / max(1, len(response))
             if text:
@@ -409,7 +427,7 @@ def ocr_consensus_details(source: Path, segment: dict[str, Any], roi: dict[str, 
         finally:
             frame_path.unlink(missing_ok=True)
     if not evidence:
-        return {"text": None, "confidence": 0, "frameAgreement": 0, "candidates": []}
+        return {"text": None, "confidence": 0, "frameAgreement": 0, "candidates": [], "detections": detections[:64]}
     best_text, scores = max(evidence.items(), key=lambda item: (len(item[1]), sum(item[1])))
     total_hits = sum(len(values) for values in evidence.values())
     candidates = [
@@ -422,6 +440,7 @@ def ocr_consensus_details(source: Path, segment: dict[str, Any], roi: dict[str, 
         "confidence": int(100 * sum(scores) / len(scores)),
         "frameAgreement": int(100 * len(scores) / max(1, total_hits)),
         "candidates": candidates[:8],
+        "detections": detections[:64],
     }
 
 
@@ -948,11 +967,14 @@ def process_job(
         rpc.report(job_id, "render_approved", 84, status="processing")
         ass_path = job_dir / "subtitles_vi_reviewed.ass"
         srt_path = job_dir / "subtitles_vi_reviewed.srt"
-        width, height = ffprobe_dimensions(source)
+        visual_source = job_dir / "masked_source.mp4"
+        if not visual_source.is_file():
+            visual_source = source
+        width, height = ffprobe_dimensions(visual_source)
         draw_ass(reviewed_segments, width, height, config["roi"], ass_path)
         draw_srt(reviewed_segments, srt_path)
         output = job_dir / f"{source.stem}_vi_reviewed.mp4"
-        render_video(source, output, ass_path, voice_inputs, config["roi"], config["audioMode"])
+        render_video(visual_source, output, ass_path, voice_inputs, config["roi"], config["audioMode"])
         log_job(f"Render từ segment đã duyệt hoàn tất: {output.name}")
         rpc.report(job_id, "complete", 100, status="complete", output_path=str(output))
         return
@@ -972,7 +994,10 @@ def process_job(
             details = ocr_consensus_details(source, segment, config["roi"], config["ocr"]["sampleFrames"])
             text = details["text"]
             confidence = details["confidence"]
-            audit = {"originalText": text, "ocrConfidence": confidence, "frameAgreement": details["frameAgreement"], "candidates": details["candidates"]}
+            audit = {
+                "originalText": text, "ocrConfidence": confidence, "frameAgreement": details["frameAgreement"],
+                "candidates": details["candidates"], "detections": details["detections"],
+            }
             segment["ocrTextZh"] = text
             segment["ocrAuditJson"] = audit
             asr_confidence = int(segment.get("confidence", 0))
@@ -1006,6 +1031,43 @@ def process_job(
             segment["sourceTextZh"] = segment["asrTextZh"]
             segment["ocrAuditJson"] = audit
     log_job(f"Đã tạo {len(segments)} segment ASR/OCR")
+
+    # Repair only OCR-confirmed CJK pixels before the Vietnamese overlay.  This is
+    # deliberately local: a failed repair becomes review work, never a broad blur.
+    visual_source = source
+    mask_review_needed = False
+    if config["ocr"]["enabled"]:
+        from localized_masking import apply_localized_masks, build_mask_plan, build_mask_qc
+
+        detections = [
+            detection
+            for segment in segments
+            for detection in segment.get("ocrAuditJson", {}).get("detections", [])
+            if isinstance(detection, dict)
+        ]
+        width, height = ffprobe_dimensions(source)
+        mask_plan = build_mask_plan(detections, (width, height))
+        mask_qc = build_mask_qc(plan_count=len(mask_plan), applied_count=0, residual_count=0)
+        if mask_plan:
+            masked_source = job_dir / "masked_source.mp4"
+            try:
+                mask_qc = apply_localized_masks(source, masked_source, mask_plan)
+                # Sample the repaired source once per affected cue (bounded) before overlay.
+                residual = 0
+                affected = [segment for segment in segments if segment.get("ocrAuditJson", {}).get("detections")][:12]
+                for segment in affected:
+                    check = ocr_consensus_details(masked_source, segment, config["roi"], 1)
+                    residual += len(check.get("detections", []))
+                mask_qc = build_mask_qc(
+                    plan_count=len(mask_plan), applied_count=int(mask_qc["appliedRegions"]), residual_count=residual,
+                )
+                visual_source = masked_source
+                mask_review_needed = bool(mask_qc["needsReview"])
+            except Exception as exc:
+                mask_review_needed = True
+                mask_qc = build_mask_qc(plan_count=len(mask_plan), applied_count=0, residual_count=1)
+                log_job(f"Localized CJK repair requires review: {type(exc).__name__}")
+        (job_dir / "mask_qc.json").write_text(json.dumps(mask_qc, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if settings.policy_mode != "off":
         from content_policy import (
@@ -1087,6 +1149,9 @@ def process_job(
                 gemini_key=settings.gemini_api_key,
                 deepseek_key=settings.deepseek_api_key,
                 openai_key=settings.openai_api_key,
+                channel_profile=str(config.get("channelProfile") or ""),
+                context_card=config.get("localizationContext") if isinstance(config.get("localizationContext"), dict) else None,
+                glossary=config.get("localizationGlossary"),
             )
         except Exception as exc:
             log_job(f"LLM Transcreation lỗi: {exc}, fallback sang dịch máy local...")
@@ -1099,12 +1164,27 @@ def process_job(
 
     rpc.report(job_id, "tts_fit", 68)
     raw_clips: list[dict[str, Any]] = []
-    review_needed = False
+    review_needed = mask_review_needed
+    timing_pass_b: list[dict[str, Any]] = []
     for segment in segments:
         raw_voice = job_dir / f"voice_{segment['position']:03d}_raw.mp3"
         fitted_voice = job_dir / f"voice_{segment['position']:03d}.mp3"
         synthesize(segment["translatedTextVi"], config["voice"]["name"], raw_voice, settings)
         duration_ms, needs_review = fit_voice(raw_voice, fitted_voice, segment["endMs"] - segment["startMs"], float(config["voice"]["maxTempo"]))
+        if needs_review and settings.translation_engine == "llm":
+            from llm_translator import refine_for_tts_overflow
+
+            replacement = refine_for_tts_overflow(
+                segment, api_key=settings.gemini_api_key, measured_ms=duration_ms,
+                channel_profile=str(config.get("channelProfile") or ""),
+            )
+            timing_pass_b.append({"position": int(segment["position"]), "attempted": True, "accepted": bool(replacement)})
+            if replacement:
+                segment["translatedTextVi"] = replacement
+                synthesize(replacement, config["voice"]["name"], raw_voice, settings)
+                duration_ms, needs_review = fit_voice(
+                    raw_voice, fitted_voice, segment["endMs"] - segment["startMs"], float(config["voice"]["maxTempo"]),
+                )
         segment["voicePath"] = str(fitted_voice)
         segment["voiceDurationMs"] = duration_ms
         segment["needsReview"] = bool(segment.get("needsReview")) or needs_review
@@ -1129,6 +1209,14 @@ def process_job(
     rpc.replace_segments(job_id, segments)
     manifest_path = job_dir / "segments.json"
     manifest_path.write_text(json.dumps({"jobId": job_id, "source": str(source), "config": config, "segments": segments}, ensure_ascii=False, indent=2), encoding="utf-8")
+    localization_qc = {
+        "schemaVersion": 1,
+        "segmentCount": min(512, len(segments)),
+        "needsReview": review_needed,
+        "tempoCeiling": float(config["voice"]["maxTempo"]),
+        "timingPassB": timing_pass_b[:64],
+    }
+    (job_dir / "localization_qc.json").write_text(json.dumps(localization_qc, ensure_ascii=False, indent=2), encoding="utf-8")
     srt_path = job_dir / "subtitles_vi.srt"
     draw_srt(segments, srt_path)
     log_job(f"Đã xuất manifest và SRT: {manifest_path.name}, {srt_path.name}")
@@ -1152,11 +1240,11 @@ def process_job(
             log_job(f"Demucs AI BGM không khả dụng ({exc}), dùng audio ducking thông thường.")
 
     ass_path = job_dir / "subtitles_vi.ass"
-    width, height = ffprobe_dimensions(source)
+    width, height = ffprobe_dimensions(visual_source)
     draw_ass(segments, width, height, config["roi"], ass_path)
     output = job_dir / f"{source.stem}_vi.mp4"
     render_video(
-        source, output, ass_path, voice_inputs, config["roi"], config["audioMode"],
+        visual_source, output, ass_path, voice_inputs, config["roi"], config["audioMode"],
         clean_bgm_path=clean_bgm_wav if clean_bgm_wav.is_file() else None
     )
     log_job(f"Render hoàn tất: {output.name}")

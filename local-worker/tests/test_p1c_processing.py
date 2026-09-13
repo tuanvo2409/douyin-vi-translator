@@ -176,7 +176,7 @@ class ProcessingTests(unittest.TestCase):
 
     def test_runtime_profile_and_policy_normalization_are_exact_and_bounded(self):
         profile = build_canonical_runtime_config(self.document, capcut_voice="BV007_streaming")
-        self.assertEqual({"name": "BV007_streaming", "maxTempo": 1.35}, profile["voice"])
+        self.assertEqual({"name": "BV007_streaming", "maxTempo": 1.12}, profile["voice"])
         self.assertEqual({"enabled": True, "sampleFrames": 3, "minConfidence": 65, "llmCorrection": False}, profile["ocr"])
         self.assertEqual({"xPercent": 2, "yPercent": 66, "widthPercent": 96, "heightPercent": 9.8, "blurPx": 24}, profile["roi"])
         self.assertEqual("duck", profile["audioMode"])

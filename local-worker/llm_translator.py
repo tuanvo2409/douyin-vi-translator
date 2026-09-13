@@ -56,42 +56,20 @@ def build_system_prompt(channel_profile: Optional[str] = None) -> str:
             
     persona_info = PAGE_PERSONAS[persona_key]
 
-    return f"""Bạn là chuyên gia chuyển ngữ (Transcreation Specialist) và Top Content Creator triệu view trên TikTok/Reels Việt Nam.
-Nhiệm vụ của bạn là chuyển thể toàn bộ kịch bản video Douyin (Trung Quốc) sang tiếng Việt theo phong cách STORYTELLING, TẤU HÀI, KỂ KHỔ, XÉO XẮT và BẮT TREND người Việt.
+    return f"""Bạn là biên dịch viên tiếng Việt cho video ngắn.
+Ưu tiên theo thứ tự: (1) trung thành với lời thoại và bằng chứng nguồn,
+(2) tiếng Việt nói tự nhiên, (3) chỉ dùng sắc thái của persona khi không làm đổi
+sự kiện, quan hệ, chủ thể, mức độ chắc chắn hoặc ý định của câu gốc.
 
 {persona_info['style_prompt']}
 
-🔥 ĐẶC BIỆT - CHIẾN THUẬT HOOK 3S ĐẦU TIÊN (THE 3-SECOND GOLDEN VIRAL HOOK):
-- Câu mở đầu (position: 0) là yếu tố QUYẾT ĐỊNH 80% tỷ lệ giữ chân người xem (Retention Rate) trên TikTok/Reels.
-- Cốt lõi: Tạo ra "Khoảng Trống Tò Mò" (Information Gap) trong não người xem theo nguyên lý: Thiếu -> Cần -> Phải Xem.
-- BẮT BUỘC phải biến câu đầu tiên thành cú nổ Punchline dựa theo bối cảnh thực tế của video:
-  + Mâu thuẫn / Nghịch lý: Phá vỡ điều người ta tưởng là đúng.
-  + Đánh trúng nỗi đau: Chạm đúng sự bực bội, khó chịu đời thường (phòng chật, bừa bộn, người lười).
-  + Bí mật / Tiết lộ: Tiết lộ điều người ngoài không biết.
-  + Cảnh báo ngược: Kích thích tò mò bằng cách cảnh báo/cấm đoán.
-- Tích cực sử dụng bộ POWER WORDS: chân ái, cứu tinh, đỉnh chóp, nghiện luôn, hack diện tích, bơi hết vào đây, chốt đơn, tiếc hùi hụi, 3 nốt nhạc.
-- Luôn đảm bảo số từ của câu mở đầu KHÔNG ĐƯỢC VƯỢT QUÁ `max_words` của slot đầu tiên!
+Không được bịa, thêm joke, hook, drama, lời kêu gọi, con số, quan hệ hay sự kiện
+không có trong nguồn. Không tự đổi câu đầu thành hook. Giữ từng `position` nguyên
+vẹn và trả về đúng một câu không rỗng cho mỗi position được yêu cầu. Tôn trọng
+`max_words` để TTS đọc tự nhiên; không dùng mẹo nén thời gian.
 
-⛔ BỘ QUY TẮC "DIỆT SẠCH AI SLOP" (NEGATIVE PROMPTING BẮT BUỘC):
-1. TUYỆT ĐỐI CẤM mọi kiểu mở đầu sáo rỗng: "Xin chào mọi người", "Chào mừng các bạn", "Hôm nay mình...", "Trong video hôm nay...", "Bạn có bao giờ tự hỏi...".
-2. TUYỆT ĐỐI CẤM các từ hoa mỹ vô nghĩa (AI Clichés): "hành trình", "chìa khóa", "bức tranh lớn", "mở khóa tiềm năng", "thay đổi cuộc đời", "bạn sẽ không tin", "game changer", "bí quyết thành công".
-3. TUYỆT ĐỐI CẤM "AI Triads" (cấu trúc liệt kê 3 vế sáo rỗng): "nhanh hơn, thông minh hơn và hiệu quả hơn", "không chỉ X, mà còn Y, và cuối cùng là Z".
-4. TUYỆT ĐỐI CẤM tạo conversational tone giả tạo: "Bạn thấy đấy...", "Hãy nghĩ về điều này...", "Nghe có vẻ lạ đúng không?", "Đúng vậy...".
-5. NGUYÊN TẮC CỤ THỂ > TRỪU TƯỢNG: Không nói "món đồ tiện lợi", hãy nói "móc kẹp không cần khoan"; không nói "không gian nhỏ", hãy nói "phòng trọ 10 mét vuông".
-
-⚡ QUY TẮC NHỊP ĐIỆU & ĐỘ DÀI ÂM TIẾT (CADENCE & SYLLABLES):
-1. Tốc độ đọc tiếng Việt tự nhiên cho Reels/TikTok là 3.0 - 3.5 từ / giây.
-2. Mỗi câu có kèm tham số `max_words`. Bạn BẮT BUỘC phải viết câu tiếng Việt có số từ KHÔNG ĐƯỢC VƯỢT QUÁ `max_words` để giọng đọc CapCut TTS không bị dồn chữ, ríu lưỡi hoặc nói hụt hơi.
-3. Thay đổi nhịp câu linh hoạt: câu rất ngắn để tạo lực, câu trung bình để phát triển ý.
-
-ĐẦU RA BẮT BUỘC:
-Chỉ trả về JSON thuần túy (không kèm giải thích markdown ngoài JSON):
-{{
-  "translations": [
-    {{ "position": 0, "translatedTextVi": "..." }},
-    {{ "position": 1, "translatedTextVi": "..." }}
-  ]
-}}
+Chỉ trả JSON thuần túy:
+{{"translations": [{{"position": 0, "translatedTextVi": "..."}}]}}
 """
 
 VIDEOLINGO_TIKTOK_SYSTEM_PROMPT = build_system_prompt()
@@ -101,6 +79,171 @@ def estimate_max_words(slot_ms: int) -> int:
     """Ước tính số lượng từ tiếng Việt tối đa cho một khoảng thời lượng."""
     slot_s = max(0.8, slot_ms / 1000.0)
     return max(4, int(slot_s * 3.4))
+
+
+def _source_text(segment: Dict[str, Any]) -> str:
+    return str(segment.get("sourceTextZh") or segment.get("ocrTextZh") or segment.get("asrTextZh") or "").strip()
+
+
+def normalize_glossary(entries: Any) -> tuple[Dict[str, Any], ...]:
+    """Keep a small, deterministic glossary; first valid source term wins."""
+    if not isinstance(entries, list):
+        return ()
+    normalized: list[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in entries[:64]:
+        if not isinstance(entry, dict):
+            continue
+        source, target = entry.get("source"), entry.get("target")
+        if not isinstance(source, str) or not isinstance(target, str):
+            continue
+        source, target = source.strip(), target.strip()
+        if not source or not target or source in seen or len(source) > 128 or len(target) > 128:
+            continue
+        seen.add(source)
+        normalized.append({
+            "source": source,
+            "target": target,
+            "category": entry.get("category") if isinstance(entry.get("category"), str) else "term",
+            "confidence": entry.get("confidence") if isinstance(entry.get("confidence"), (int, float)) else None,
+        })
+    return tuple(normalized)
+
+
+def normalize_context_card(card: Any) -> Dict[str, Any]:
+    """Whitelist only identity-safe rolling context; never retain free-form story claims."""
+    if not isinstance(card, dict):
+        return {}
+    normalized: Dict[str, Any] = {}
+    for key in ("pronouns", "names", "relationships", "locations"):
+        value = card.get(key)
+        if isinstance(value, dict):
+            clean = {str(k)[:80]: str(v)[:120] for k, v in value.items() if str(k).strip() and str(v).strip()}
+            if clean:
+                normalized[key] = dict(list(clean.items())[:32])
+    encoded = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+    return normalized if len(encoded.split()) <= 350 else {}
+
+
+def build_contextual_batches(
+    segments: List[Dict[str, Any]], max_current: int = 14, max_duration_ms: int = 60_000
+) -> List[Dict[str, List[Dict[str, Any]]]]:
+    """Partition immutable cues while showing only bounded neighboring source context."""
+    if max_current < 1 or max_duration_ms < 1:
+        raise ValueError("invalid contextual batch limits")
+    batches: List[Dict[str, List[Dict[str, Any]]]] = []
+    start = 0
+    while start < len(segments):
+        first_start = int(segments[start].get("startMs", 0))
+        end = start
+        while end < len(segments) and end - start < max_current:
+            end_ms = int(segments[end].get("endMs", first_start))
+            if end > start and end_ms - first_start > max_duration_ms:
+                break
+            end += 1
+        current = segments[start:end]
+        batches.append({
+            "current": current,
+            "previous": segments[max(0, start - 2):start],
+            "following": segments[end:min(len(segments), end + 2)],
+        })
+        start = end
+    return batches
+
+
+def _prompt_cues(cues: List[Dict[str, Any]], include_translation: bool = False) -> List[Dict[str, Any]]:
+    result = []
+    for fallback_position, cue in enumerate(cues):
+        position = cue.get("position", fallback_position)
+        record: Dict[str, Any] = {"position": position, "chinese_text": _source_text(cue)}
+        if include_translation and isinstance(cue.get("translatedTextVi"), str):
+            record["translatedTextVi"] = cue["translatedTextVi"].strip()
+        result.append(record)
+    return result
+
+
+def build_contextual_prompt(
+    cues: List[Dict[str, Any]], previous: List[Dict[str, Any]], following: List[Dict[str, Any]],
+    context_card: Dict[str, Any], glossary: tuple[Dict[str, Any], ...], channel_profile: Optional[str] = None,
+) -> str:
+    current = []
+    for fallback_position, cue in enumerate(cues):
+        slot_ms = max(0, int(cue.get("endMs", 0)) - int(cue.get("startMs", 0)))
+        current.append({
+            "position": cue.get("position", fallback_position), "chinese_text": _source_text(cue),
+            "max_words": estimate_max_words(slot_ms),
+        })
+    return (
+        f"{build_system_prompt(channel_profile)}\n\n"
+        "Ngữ cảnh trước là bản dịch đã chốt; ngữ cảnh sau chỉ để hiểu nghĩa, không được dịch thay. "
+        "Không được bịa hoặc suy diễn ngoài nguồn.\n"
+        f"PREVIOUS={json.dumps(_prompt_cues(previous, True), ensure_ascii=False)}\n"
+        f"FOLLOWING_SOURCE_ONLY={json.dumps(_prompt_cues(following), ensure_ascii=False)}\n"
+        f"CONTEXT_CARD={json.dumps(normalize_context_card(context_card), ensure_ascii=False)}\n"
+        f"GLOSSARY={json.dumps(glossary, ensure_ascii=False)}\n"
+        f"CUES={json.dumps(current, ensure_ascii=False)}"
+    )
+
+
+def validate_translation_response(cues: List[Dict[str, Any]], document: Any) -> Dict[int, str]:
+    """Fail closed unless the provider returns exactly one nonblank result per cue."""
+    if not isinstance(document, dict) or not isinstance(document.get("translations"), list):
+        raise ValueError("malformed translation response")
+    expected = {cue.get("position", index) for index, cue in enumerate(cues)}
+    translated: Dict[int, str] = {}
+    for item in document["translations"]:
+        if not isinstance(item, dict) or not isinstance(item.get("position"), int):
+            raise ValueError("malformed translation item")
+        position, text = item["position"], item.get("translatedTextVi")
+        if position not in expected or position in translated or not isinstance(text, str) or not text.strip():
+            raise ValueError("invalid translation positions")
+        translated[position] = text.strip()
+    if set(translated) != expected:
+        raise ValueError("incomplete translation response")
+    return translated
+
+
+def refine_for_tts_overflow(
+    segment: Dict[str, Any], *, api_key: Optional[str], measured_ms: int,
+    model: str = "gemini-flash-lite-latest", channel_profile: Optional[str] = None,
+) -> str | None:
+    """One bounded semantic retry for a measured TTS overflow; never truncate text locally."""
+    active_key = gemini_pool.get_key() or api_key
+    if not active_key:
+        return None
+    slot_ms = max(1, int(segment.get("endMs", 0)) - int(segment.get("startMs", 0)))
+    position = int(segment.get("position", 0))
+    prompt = (
+        f"{build_system_prompt(channel_profile)}\n\n"
+        "Đây là Pass B duy nhất vì TTS đo được dài hơn slot. Giữ nguyên nghĩa, sự kiện, chủ thể và quan hệ; "
+        "chỉ viết tự nhiên ngắn hơn. Không được bịa hoặc bỏ ý quan trọng.\n"
+        f"SOURCE={json.dumps(_source_text(segment), ensure_ascii=False)}\n"
+        f"CURRENT_VI={json.dumps(str(segment.get('translatedTextVi') or ''), ensure_ascii=False)}\n"
+        f"MEASURED_MS={int(measured_ms)} SLOT_MS={slot_ms} MAX_WORDS={estimate_max_words(slot_ms)}\n"
+        f"Return only {{\"translations\":[{{\"position\":{position},\"translatedTextVi\":\"...\"}}]}}"
+    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={active_key}"
+    try:
+        response = requests.post(url, json={
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2},
+        }, timeout=40)
+        response.raise_for_status()
+        text = response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        return validate_translation_response([segment], json.loads(text.strip())).get(position)
+    except requests.exceptions.HTTPError as error:
+        status = error.response.status_code if error.response is not None else 500
+        gemini_pool.report_error(active_key, status)
+        logger.warning("Gemini timing pass failed with HTTP %s", status)
+    except Exception as error:
+        logger.warning("Gemini timing pass failed: %s", type(error).__name__)
+    return None
 
 
 def translate_with_google_free(text: str) -> str:
@@ -124,29 +267,17 @@ def translate_with_gemini_single_chunk(
     chunk_offset: int,
     api_key: str,
     model: str = "gemini-flash-lite-latest",
-    channel_profile: Optional[str] = None
+    channel_profile: Optional[str] = None,
+    previous: Optional[List[Dict[str, Any]]] = None,
+    following: Optional[List[Dict[str, Any]]] = None,
+    context_card: Optional[Dict[str, Any]] = None,
+    glossary: tuple[Dict[str, Any], ...] = (),
 ) -> Dict[int, str]:
     """Dịch 1 nhóm câu thoại qua Google Gemini REST API v1beta."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     
-    input_data = []
-    for idx, seg in enumerate(chunk_segs, start=chunk_offset):
-        slot_ms = seg.get("endMs", 0) - seg.get("startMs", 0)
-        source_text = seg.get("sourceTextZh") or seg.get("ocrTextZh") or seg.get("asrTextZh", "")
-        input_data.append({
-            "position": seg.get("position", idx),
-            "slot_s": round(slot_ms / 1000, 2),
-            "max_words": estimate_max_words(slot_ms),
-            "chinese_text": source_text
-        })
-        
-    sys_prompt = build_system_prompt(channel_profile=channel_profile)
-        
-    prompt = (
-        f"{sys_prompt}\n\n"
-        f"Dịch kịch bản các câu sau sang tiếng Việt chuẩn TikTok:\n"
-        f"{json.dumps(input_data, ensure_ascii=False, indent=2)}\n\n"
-        f"Xuất JSON: {{\"translations\": [{{\"position\": 0, \"translatedTextVi\": \"...\"}}]}}"
+    prompt = build_contextual_prompt(
+        chunk_segs, previous or [], following or [], context_card or {}, glossary, channel_profile,
     )
     
     payload = {
@@ -168,8 +299,7 @@ def translate_with_gemini_single_chunk(
         text_resp = text_resp[3:]
     if text_resp.endswith("```"):
         text_resp = text_resp[:-3]
-    result = json.loads(text_resp.strip())
-    return {item["position"]: item["translatedTextVi"] for item in result.get("translations", []) if item.get("translatedTextVi")}
+    return validate_translation_response(chunk_segs, json.loads(text_resp.strip()))
 
 
 from gemini_pool import gemini_pool
@@ -179,15 +309,19 @@ def translate_with_gemini(
     segments: List[Dict[str, Any]],
     api_key: Optional[str] = None,
     model: str = "gemini-flash-lite-latest",
-    channel_profile: Optional[str] = None
+    channel_profile: Optional[str] = None,
+    context_card: Optional[Dict[str, Any]] = None,
+    glossary: Any = None,
 ) -> List[Dict[str, Any]]:
     """Dịch các đoạn thoại bằng Google Gemini với khả năng xoay tua key thông minh."""
     models_to_try = [model, "gemini-flash-lite-latest", "gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash"]
     unique_models = list(dict.fromkeys(models_to_try))
+    bounded_context = normalize_context_card(context_card)
+    bounded_glossary = normalize_glossary(glossary)
     
-    chunk_size = 12
-    for chunk_start in range(0, len(segments), chunk_size):
-        chunk_segs = segments[chunk_start:chunk_start + chunk_size]
+    chunk_start = 0
+    for batch in build_contextual_batches(segments, max_current=14, max_duration_ms=60_000):
+        chunk_segs = batch["current"]
         trans_map = {}
         
         # Thử xoay tua các key trong pool
@@ -202,7 +336,9 @@ def translate_with_gemini(
                 try:
                     trans_map = translate_with_gemini_single_chunk(
                         chunk_segs, chunk_start, active_key,
-                        model=m, channel_profile=channel_profile
+                        model=m, channel_profile=channel_profile,
+                        previous=batch["previous"], following=batch["following"],
+                        context_card=bounded_context, glossary=bounded_glossary,
                     )
                     if trans_map:
                         success = True
@@ -223,6 +359,7 @@ def translate_with_gemini(
             pos = seg.get("position", idx)
             if pos in trans_map and trans_map[pos]:
                 seg["translatedTextVi"] = trans_map[pos]
+        chunk_start += len(chunk_segs)
 
     return segments
 
@@ -282,7 +419,6 @@ def clean_vietnamese_text(text: str) -> str:
     """Loại bỏ triệt để mọi ký tự tiếng Trung hoặc token hán tự còn sót lại trong bản dịch."""
     if not text:
         return ""
-    text = text.replace("thu纳", "đựng đồ").replace("纳", "")
     text = re.sub(r'[\u4e00-\u9fff]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
@@ -293,7 +429,9 @@ def translate_segments_native(
     gemini_key: Optional[str] = None,
     deepseek_key: Optional[str] = None,
     openai_key: Optional[str] = None,
-    channel_profile: Optional[str] = None
+    channel_profile: Optional[str] = None,
+    context_card: Optional[Dict[str, Any]] = None,
+    glossary: Any = None,
 ) -> List[Dict[str, Any]]:
     """Điểm vào chính: Chuyển ngữ bản xứ bằng LLM với cơ chế xoay tua Gemini Key Pool 100% khi gặp 429."""
     if not segments:
@@ -306,7 +444,7 @@ def translate_segments_native(
             segments = translate_with_gemini(
                 segments, gemini_key,
                 model="gemini-flash-lite-latest",
-                channel_profile=channel_profile
+                channel_profile=channel_profile, context_card=context_card, glossary=glossary,
             )
         except Exception as exc:
             logger.warning(f"Lỗi khi gọi Gemini API ({type(exc).__name__})...")
