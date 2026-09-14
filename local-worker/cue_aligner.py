@@ -198,7 +198,7 @@ def _align_dialogue_row(
         })
     if _normalize_join(cues) != _normalize(native):
         raise CueAlignmentError(f"alignment text coverage failed for utterance {identifier}")
-    return {
+    result = {
         "utteranceId": identifier,
         "resolvedZh": resolved,
         "nativeVi": native,
@@ -210,6 +210,10 @@ def _align_dialogue_row(
         "ttsEligible": not explicit_review,
         "alignedCues": cues,
     }
+    for field in ("intent", "roleplay", "register", "style"):
+        if field in record:
+            result[field] = record[field]
+    return result
 
 
 def _diagnostic_row(record: Mapping[str, object], classification: str, qa_flags: Sequence[str]) -> dict[str, object]:

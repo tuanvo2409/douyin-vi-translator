@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from cue_aligner import build_alignment, write_alignment_artifacts
-from tts_timing import run_tts_timing
+from tts_timing import run_cp3a, run_tts_timing
 
 
 def _record(
@@ -326,7 +327,7 @@ class TtsTimingTests(unittest.TestCase):
             synthesizer=lambda text, voice, target: (_ for _ in ()).throw(AssertionError("cache miss")),
             measure_duration=lambda path: 1, fit_audio=fit_audio,
         )
-        qc = json.loads((self.output / "tts_qc_v3.json").read_text(encoding="utf-8"))
+        qc = json.loads((self.output / "tts_qc_v4.json").read_text(encoding="utf-8"))
         self.assertEqual(1, qc["reviewCount"])
         self.assertEqual("TTS_TIMING_OVERFLOW", qc["reviewRequired"][0]["reason"])
         self.assertTrue(second["rows"][0]["reviewRequired"])
@@ -341,12 +342,256 @@ class TtsTimingTests(unittest.TestCase):
             measure_duration=lambda path: 500,
             fit_audio=lambda raw, fitted, slot_ms, max_tempo: (fitted.write_bytes(raw.read_bytes()) or 500, False),
         )
-        manifest = json.loads((self.output / "tts_manifest_v3.json").read_text(encoding="utf-8"))
-        qc = json.loads((self.output / "tts_qc_v3.json").read_text(encoding="utf-8"))
+        manifest = json.loads((self.output / "tts_manifest_v4.json").read_text(encoding="utf-8"))
+        qc = json.loads((self.output / "tts_qc_v4.json").read_text(encoding="utf-8"))
         self.assertEqual(1, manifest["schemaVersion"])
         self.assertEqual(1, qc["schemaVersion"])
         self.assertIn("measuredMsBefore", manifest["rows"][0])
         self.assertIn("reviewRequired", qc["rows"][0])
+
+
+class VoiceEventTimingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.output = Path(self.temp.name)
+
+    def _alignment(self, *records: dict[str, object]) -> dict[str, object]:
+        return build_alignment(list(records))
+
+    def _synthesizer(self, calls: list[str]):
+        def synthesize(text: str, voice: str, target: Path) -> None:
+            calls.append(text)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"audio")
+
+        return synthesize
+
+    def _fit(self, calls: list[int], duration: int = 900, review: bool = False):
+        def fit_audio(raw: Path, fitted: Path, slot_ms: int, max_tempo: float) -> tuple[int, bool]:
+            calls.append(slot_ms)
+            fitted.write_bytes(raw.read_bytes())
+            return duration, review
+
+        return fit_audio
+
+    def test_one_semantic_utterance_produces_one_voice_event_and_one_tts_call(self) -> None:
+        record = _record(text="Tớ gom tiền, rồi mua cặp mới nhé.", positions=[1, 2, 3], start=0, end=3000)
+        calls: list[str] = []
+        result = run_tts_timing(
+            self._alignment(record), self.output, synthesizer=self._synthesizer(calls),
+            measure_duration=lambda path: 900, fit_audio=self._fit([]), timing_repair=None,
+        )
+        self.assertEqual([record["nativeVi"]], calls)
+        self.assertEqual(1, len(result["voiceEvents"]))
+        self.assertEqual(1, len(result["rows"]))
+        self.assertGreaterEqual(len(result["subtitleCues"]), 2)
+        self.assertEqual([1, 2, 3], sorted({position for cue in result["subtitleCues"] for position in cue["sourcePositions"]}))
+
+    def test_subtitle_cue_splitting_does_not_create_provider_calls(self) -> None:
+        record = _record(text="Tớ gom tiền, rồi mua cặp mới nhé.", positions=[1, 2, 3], start=0, end=3000)
+        calls: list[str] = []
+        result = run_tts_timing(
+            self._alignment(record), self.output, synthesizer=self._synthesizer(calls),
+            measure_duration=lambda path: 900, fit_audio=self._fit([]), timing_repair=None,
+        )
+        self.assertEqual(1, result["providerCalls"])
+        self.assertEqual([1, 2, 3], sorted({position for cue in result["subtitleCues"] for position in cue["sourcePositions"]}))
+        self.assertTrue(all("audioPath" not in cue for cue in result["subtitleCues"]))
+
+    def test_full_utterance_window_and_positions_remain_available(self) -> None:
+        record = _record(text="Tớ gom tiền, rồi mua cặp mới nhé.", positions=[1, 2, 3], start=1200, end=4200)
+        fit_slots: list[int] = []
+        result = run_tts_timing(
+            self._alignment(record), self.output, synthesizer=self._synthesizer([]),
+            measure_duration=lambda path: 900, fit_audio=self._fit(fit_slots), timing_repair=None,
+        )
+        event = result["voiceEvents"][0]
+        self.assertEqual((1200, 4200), (event["baseStartMs"], event["baseEndMs"]))
+        self.assertEqual([3000], fit_slots)
+        self.assertEqual([1, 2, 3], event["sourcePositions"])
+        self.assertEqual([1, 2, 3], sorted({position for cue in result["subtitleCues"] for position in cue["sourcePositions"]}))
+        self.assertEqual("u1", result["subtitleCues"][0]["utteranceId"])
+
+    def test_visual_only_and_unresolved_dialogue_never_enter_tts(self) -> None:
+        visual = _record("visual", classification="VISUAL_ONLY", text="", resolved="")
+        visual.pop("positions")
+        unresolved = _record("unknown", classification="UNRESOLVED_DIALOGUE", text="", resolved="")
+        calls: list[str] = []
+        result = run_tts_timing(
+            self._alignment(visual, unresolved, _record("spoken")), self.output,
+            synthesizer=self._synthesizer(calls), measure_duration=lambda path: 500,
+            fit_audio=self._fit([]), timing_repair=None,
+        )
+        self.assertEqual(["Xin chào, mình đi nhé."], calls)
+        self.assertEqual(["spoken"], [event["utteranceId"] for event in result["voiceEvents"]])
+
+    def test_source_uncertain_stays_review_required_without_audio(self) -> None:
+        record = _record(flags=["SOURCE_UNCERTAIN"])
+        calls: list[str] = []
+        result = run_tts_timing(
+            self._alignment(record), self.output, synthesizer=self._synthesizer(calls),
+            measure_duration=lambda path: 500, fit_audio=self._fit([]), timing_repair=None,
+        )
+        event = result["voiceEvents"][0]
+        self.assertEqual([], calls)
+        self.assertTrue(event["reviewRequired"])
+        self.assertEqual("SOURCE_UNCERTAIN", event["reviewReason"])
+        self.assertIsNone(event["audioPath"])
+
+    def test_timing_repair_receives_full_native_line_and_context(self) -> None:
+        record = _record(
+            text="Tớ gom tiền, rồi mua cặp mới nhé.", positions=[1, 2, 3], start=0, end=1000,
+        )
+        record.update({"intent": "request", "roleplay": "palace", "register": "formal"})
+        calls: list[str] = []
+        repair_contexts: list[dict[str, object]] = []
+
+        def repair(text: str, context: dict[str, object]) -> str:
+            repair_contexts.append(context)
+            return "Gom tiền rồi mua cặp mới nhé."
+
+        result = run_tts_timing(
+            self._alignment(record), self.output, synthesizer=self._synthesizer(calls),
+            measure_duration=lambda path: 1500, fit_audio=self._fit([], 900, True), timing_repair=repair,
+        )
+        self.assertEqual([record["nativeVi"], "Gom tiền rồi mua cặp mới nhé."], calls)
+        context = repair_contexts[0]
+        self.assertEqual(record["nativeVi"], context["approvedNativeVi"])
+        self.assertEqual([1, 2, 3], context["sourcePositions"])
+        self.assertEqual("request", context["intent"])
+        self.assertEqual("palace", context["roleplay"])
+        self.assertEqual("formal", context["register"])
+        self.assertEqual("Gom tiền rồi mua cặp mới nhé.", result["voiceEvents"][0]["deliveryNativeVi"])
+
+    def test_only_one_linguistic_repair_is_allowed(self) -> None:
+        repairs: list[str] = []
+
+        def repair(text: str, context: dict[str, object]) -> str:
+            repairs.append(text)
+            return "Gom tiền rồi mua cặp mới nhé."
+
+        result = run_tts_timing(
+            self._alignment(_record(text="Tớ gom tiền, rồi mua cặp mới nhé.")), self.output,
+            synthesizer=self._synthesizer([]), measure_duration=lambda path: 1500,
+            fit_audio=self._fit([], 1500, True), timing_repair=repair,
+        )
+        self.assertEqual(1, len(repairs))
+        self.assertTrue(result["voiceEvents"][0]["timingRepairAttempted"])
+        self.assertTrue(result["voiceEvents"][0]["reviewRequired"])
+
+    def test_subtitle_alignment_after_repair_does_not_resynthesize_cues(self) -> None:
+        calls: list[str] = []
+        fit_results = iter([(1500, True), (900, False)])
+
+        def fit_audio(raw: Path, fitted: Path, slot_ms: int, max_tempo: float) -> tuple[int, bool]:
+            fitted.write_bytes(raw.read_bytes())
+            return next(fit_results)
+
+        result = run_tts_timing(
+            self._alignment(_record(text="Tớ gom tiền, rồi mua cặp mới nhé.", positions=[1, 2, 3])), self.output,
+            synthesizer=self._synthesizer(calls), measure_duration=lambda path: 1500,
+            fit_audio=fit_audio, timing_repair=lambda text, context: "Gom tiền rồi mua cặp mới nhé.",
+        )
+        self.assertEqual(2, len(calls))
+        self.assertGreater(len(result["subtitleCues"]), 1)
+        self.assertEqual(1, len(result["voiceEvents"]))
+
+    def test_whole_utterance_cache_reuse_is_identity_safe(self) -> None:
+        calls: list[str] = []
+        alignment = self._alignment(_record(text="Tớ gom tiền, rồi mua cặp mới nhé.", positions=[1, 2, 3]))
+        first = run_tts_timing(
+            alignment, self.output, synthesizer=self._synthesizer(calls), measure_duration=lambda path: 500,
+            fit_audio=self._fit([]), timing_repair=None,
+        )
+        second = run_tts_timing(
+            alignment, self.output, synthesizer=lambda text, voice, target: (_ for _ in ()).throw(AssertionError("cache miss")),
+            measure_duration=lambda path: 9999, fit_audio=self._fit([]), timing_repair=None,
+        )
+        self.assertEqual(1, len(calls))
+        self.assertEqual(1, second["cacheHits"])
+        self.assertEqual(first["voiceEvents"][0]["audioPath"], second["voiceEvents"][0]["audioPath"])
+
+    def test_review_debt_is_counted_by_utterance_not_subtitle_fragment(self) -> None:
+        record = _record(text="Tớ gom tiền, rồi mua cặp mới nhé.", positions=[1, 2, 3])
+        result = run_tts_timing(
+            self._alignment(record), self.output, synthesizer=self._synthesizer([]), measure_duration=lambda path: 1500,
+            fit_audio=self._fit([], 1500, True), timing_repair=None,
+        )
+        qc = json.loads((self.output / "tts_qc_v4.json").read_text(encoding="utf-8"))
+        self.assertEqual(1, qc["reviewCount"])
+        self.assertEqual(["u1"], [item["utteranceId"] for item in qc["reviewRequired"]])
+        self.assertEqual(1, len(result["voiceEvents"]))
+
+    def test_visual_gap_is_borrowed_only_before_next_spoken_utterance(self) -> None:
+        first = _record("first", text="Câu đầu.", positions=[0], start=0, end=1000)
+        visual = _record("visual", classification="VISUAL_ONLY", text="", resolved="", start=1000, end=1500)
+        visual.pop("positions")
+        second = _record("second", text="Câu sau.", positions=[1], start=1500, end=2500)
+        result = run_tts_timing(
+            self._alignment(first, visual, second), self.output, synthesizer=self._synthesizer([]),
+            measure_duration=lambda path: 500, fit_audio=self._fit([]), timing_repair=None,
+        )
+        events = result["voiceEvents"]
+        self.assertEqual(1500, events[0]["effectiveEndMs"])
+        self.assertEqual(500, events[0]["borrowedGapMs"])
+        self.assertEqual(0, events[1]["borrowedGapMs"])
+        self.assertLessEqual(events[0]["effectiveEndMs"], events[1]["baseStartMs"])
+
+    def test_gap_without_next_spoken_utterance_is_not_arbitrarily_extended(self) -> None:
+        first = _record("first", text="Câu đầu.", positions=[0], start=0, end=1000)
+        visual = _record("visual", classification="VISUAL_ONLY", text="", resolved="", start=1000, end=2000)
+        visual.pop("positions")
+        result = run_tts_timing(
+            self._alignment(first, visual), self.output, synthesizer=self._synthesizer([]),
+            measure_duration=lambda path: 500, fit_audio=self._fit([]), timing_repair=None,
+        )
+        self.assertEqual(1000, result["voiceEvents"][0]["effectiveEndMs"])
+        self.assertEqual(0, result["voiceEvents"][0]["borrowedGapMs"])
+
+    def test_v4_artifacts_have_one_row_per_utterance_and_required_qc_table(self) -> None:
+        run_tts_timing(
+            self._alignment(_record(text="Tớ gom tiền, rồi mua cặp mới nhé.", positions=[1, 2, 3])), self.output,
+            synthesizer=self._synthesizer([]), measure_duration=lambda path: 500,
+            fit_audio=self._fit([]), timing_repair=None,
+        )
+        expected = {
+            "voice_events_v4.json", "subtitle_alignment_v4.json", "tts_manifest_v4.json",
+            "tts_qc_v4.json", "tts_qc_v4.md",
+        }
+        self.assertEqual(expected, {path.name for path in self.output.iterdir() if path.is_file()})
+        markdown = (self.output / "tts_qc_v4.md").read_text(encoding="utf-8")
+        self.assertIn("| ID | Source time | Effective window | Borrowed gap | Approved VI | Delivery VI | Raw TTS ms | Tempo | Repair | Final TTS ms | Review |", markdown)
+
+    def test_run_cp3a_resolves_existing_default_repair_hook_without_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cp2 = root / "cp2.json"
+            record = _record(text="Câu ngắn.", positions=[0], start=0, end=1000)
+            cp2.write_text(json.dumps({"records": [record], "accepted": [record]}), encoding="utf-8")
+            calls: list[str] = []
+            result = run_cp3a(
+                cp2, root / "output", synthesizer=self._synthesizer(calls), measure_duration=lambda path: 500,
+                fit_audio=self._fit([]),
+            )
+            self.assertEqual(["Câu ngắn."], calls)
+            self.assertEqual(1, len(result["voiceEvents"]))
+
+    def test_tts_uses_existing_lazy_capcut_synthesizer_adapter(self) -> None:
+        calls: list[str] = []
+
+        def capcut(text: str, voice: str, target: Path) -> None:
+            calls.append(text)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"audio")
+
+        with patch("dubvi_worker.capcut_synthesize", side_effect=capcut):
+            result = run_tts_timing(
+                self._alignment(_record(text="Câu ngắn.")), self.output,
+                measure_duration=lambda path: 500, fit_audio=self._fit([]), timing_repair=None,
+            )
+        self.assertEqual(["Câu ngắn."], calls)
+        self.assertEqual(1, result["providerCalls"])
 
 
 if __name__ == "__main__":
