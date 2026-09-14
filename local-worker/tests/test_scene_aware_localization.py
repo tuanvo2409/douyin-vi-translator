@@ -126,7 +126,10 @@ class SceneAwareLocalizationTests(unittest.TestCase):
                 return {"issues": []}
             key = "semanticVi" if payload["mode"] == "semantic" else "nativeVi"
             return {"translations": [{"utteranceId": item["utteranceId"], key: "Câu hợp lệ"} for item in payload["utterances"]]}
-        records = [{"utteranceId": "u1", "start_ms": 0, "end_ms": 1, "resolvedZh": "新学期", "source_confidence": "high", "kind": "dialogue"}]
+        records = [
+            {"utteranceId": "u1", "start_ms": 0, "end_ms": 1, "resolvedZh": "新学期", "source_confidence": "high", "kind": "dialogue"},
+            {"utteranceId": "v1", "start_ms": 0, "end_ms": 1, "resolvedZh": "标题", "source_confidence": "high", "kind": "visual_only"},
+        ]
         with tempfile.TemporaryDirectory() as directory:
             vi_harness.run_observed_text_ab(records, Path(directory), scene_request=scene, request=request, model="fake")
             state = json.loads((Path(directory) / "cp2_run_state.json").read_text(encoding="utf-8"))
@@ -142,7 +145,10 @@ class SceneAwareLocalizationTests(unittest.TestCase):
         self.assertTrue(hasattr(vi_harness, "run_observed_text_ab"))
         def scene(_payload):
             raise RuntimeError("provider unavailable")
-        records = [{"utteranceId": "u1", "start_ms": 0, "end_ms": 1, "resolvedZh": "新学期", "source_confidence": "high", "kind": "dialogue"}]
+        records = [
+            {"utteranceId": "u1", "start_ms": 0, "end_ms": 1, "resolvedZh": "新学期", "source_confidence": "high", "kind": "dialogue"},
+            {"utteranceId": "v1", "start_ms": 0, "end_ms": 1, "resolvedZh": "标题", "source_confidence": "high", "kind": "visual_only"},
+        ]
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(RuntimeError):
                 vi_harness.run_observed_text_ab(records, Path(directory), scene_request=scene, request=lambda _payload: {}, model="fake")
@@ -164,7 +170,10 @@ class SceneAwareLocalizationTests(unittest.TestCase):
                 return {"translations": [{"utteranceId": "u1", "nativeVi": "Bản đã sửa"}]}
             key = "semanticVi" if payload["mode"] == "semantic" else "nativeVi"
             return {"translations": [{"utteranceId": item["utteranceId"], key: "Bản cũ"} for item in payload["utterances"]]}
-        records = [{"utteranceId": "u1", "start_ms": 0, "end_ms": 1, "resolvedZh": "新学期", "source_confidence": "high", "kind": "dialogue"}]
+        records = [
+            {"utteranceId": "u1", "start_ms": 0, "end_ms": 1, "resolvedZh": "新学期", "source_confidence": "high", "kind": "dialogue"},
+            {"utteranceId": "v1", "start_ms": 0, "end_ms": 1, "resolvedZh": "标题", "source_confidence": "high", "kind": "visual_only"},
+        ]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             vi_harness.run_observed_text_ab(records, root, scene_request=scene, request=request, model="fake")
@@ -175,6 +184,7 @@ class SceneAwareLocalizationTests(unittest.TestCase):
             self.assertEqual("Bản đã sửa", artifact["accepted"][0]["nativeVi"])
             self.assertEqual(["scene", "semantic", "native", "qa", "repair"], [call["operation"] for call in state["calls"]])
             self.assertEqual("complete", state["status"])
+            self.assertIn("标题", (root / "multimodal_vi_ab_25s.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

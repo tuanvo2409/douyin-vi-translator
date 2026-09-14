@@ -83,7 +83,7 @@ def run_text_ab(records: Sequence[Mapping[str, object]], output_dir: Path, *, sc
     memory = build_scene_memory(scene_evidence)
     result = localize(records, scene_memory=memory, request=request, profile="vn_native_light_comedy")
     issues = deterministic_issues(result["accepted"]) + llm_issues(result["accepted"], request)
-    artifact = {"scene_memory": memory, "accepted": result["accepted"], "review_required": result["review_required"], "qa": issues}
+    artifact = {"records": [dict(record) for record in records], "scene_memory": memory, "accepted": result["accepted"], "review_required": result["review_required"], "qa": issues}
     json_path = _write(output_dir / "multimodal_vi_ab_25s.json", artifact)
     md_path = output_dir / "multimodal_vi_ab_25s.md"
     temporary = md_path.with_name("." + md_path.name + ".tmp")
@@ -136,7 +136,9 @@ def repair_completed_run(output_dir: Path, *, request: Callable[[dict[str, objec
         _write(artifact_path, artifact)
         md_path = output_dir / "multimodal_vi_ab_25s.md"
         temporary = md_path.with_name("." + md_path.name + ".tmp")
-        records = accepted + [{"utteranceId": item["utteranceId"], "kind": "dialogue", "source_confidence": "unresolved"} for item in artifact["review_required"]]
+        records = artifact.get("records")
+        if not isinstance(records, list):
+            raise ValueError("repair artifact is missing source rows")
         temporary.write_text(_markdown(records, artifact["scene_memory"], accepted, artifact["review_required"], artifact["qa"]), encoding="utf-8")
         os.replace(temporary, md_path)
         observer.complete()
