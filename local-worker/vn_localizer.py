@@ -32,6 +32,13 @@ _NATIVE_EDITORIAL_CONTRACT = {
     ],
 }
 
+_TERMINOLOGY_GUIDANCE = [
+    "Use repeated source-grounded scene occurrences before treating an ambiguous token as a proper name.",
+    "Distinguish proper names from culture-loaded common nouns, internet/social-class terms, category or status terms, and roleplay terminology.",
+    "A token in a class or category construction may describe a group, style, or status rather than a person.",
+    "Visual-only evidence may clarify scene meaning but must never become spoken dialogue or TTS text.",
+]
+
 
 def _valid_vi(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip()) and not _CJK.search(value)
@@ -54,7 +61,19 @@ def _validate_response(document: object, records: Sequence[Mapping[str, object]]
     return result
 
 
-def localize(records: Sequence[Mapping[str, object]], *, scene_memory: Mapping[str, object], request: Callable[[dict[str, object]], object], profile: str) -> dict[str, list[dict[str, object]]]:
+def _with_neighbors(records: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    """Attach bounded read-only context without changing utterance identity."""
+    base = [dict(record) for record in records]
+    return [
+        {
+            **record,
+            "neighbors": [dict(base[index]) for index in range(max(0, current - 2), min(len(base), current + 3)) if index != current],
+        }
+        for current, record in enumerate(base)
+    ]
+
+
+def localize(records: Sequence[Mapping[str, object]], *, scene_memory: Mapping[str, object], request: Callable[[dict[str, object]], object], profile: str, on_stage=None) -> dict[str, list[dict[str, object]]]:
     if profile not in PROFILES:
         raise ValueError("unsupported localization profile")
     unresolved = lambda item: item.get("classification") == "UNRESOLVED_DIALOGUE" or item.get("type") == "UNRESOLVED_DIALOGUE" or item.get("source_confidence") in {"low", "unresolved"}
@@ -62,8 +81,14 @@ def localize(records: Sequence[Mapping[str, object]], *, scene_memory: Mapping[s
     review_required = [{"utteranceId": item["utteranceId"], "reason": "UNRESOLVED_SOURCE"} for item in records if item.get("kind") == "dialogue" and unresolved(item)]
     if not resolved:
         return {"accepted": [], "review_required": review_required}
-    semantic = _validate_response(request({"mode": "semantic", "utterances": resolved, "scene_memory": dict(scene_memory)}), resolved, "semanticVi")
+    semantic_input = _with_neighbors(resolved)
+    semantic = _validate_response(request({"mode": "semantic", "utterances": semantic_input, "scene_memory": dict(scene_memory), "terminology_evidence": list(scene_memory.get("terminologyEvidence", [])), "terminology_guidance": _TERMINOLOGY_GUIDANCE, "localization_profile": profile}), semantic_input, "semanticVi")
+    if on_stage is not None:
+        on_stage("semantic", [{"utteranceId": item["utteranceId"], "semanticVi": semantic[str(item["utteranceId"])]} for item in resolved])
     semantic_records = [{**item, "semanticVi": semantic[str(item["utteranceId"])]} for item in resolved]
-    native = _validate_response(request({"mode": "native", "utterances": semantic_records, "scene_memory": dict(scene_memory), "profile": PROFILES[profile], "editorial_contract": _NATIVE_EDITORIAL_CONTRACT}), semantic_records, "nativeVi")
+    native_input = _with_neighbors(semantic_records)
+    native = _validate_response(request({"mode": "native", "utterances": native_input, "scene_memory": dict(scene_memory), "terminology_evidence": list(scene_memory.get("terminologyEvidence", [])), "terminology_guidance": _TERMINOLOGY_GUIDANCE, "localization_profile": profile, "profile": PROFILES[profile], "editorial_contract": _NATIVE_EDITORIAL_CONTRACT}), native_input, "nativeVi")
+    if on_stage is not None:
+        on_stage("native", [{"utteranceId": item["utteranceId"], "nativeVi": native[str(item["utteranceId"])]} for item in resolved])
     accepted = [{**item, "nativeVi": native[str(item["utteranceId"])], "style": {"register": str(scene_memory.get("register", "neutral")), "humorLevel": PROFILES[profile]["humor"]}} for item in semantic_records]
     return {"accepted": accepted, "review_required": review_required}
