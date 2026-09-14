@@ -65,6 +65,24 @@ class SceneAwareLocalizationTests(unittest.TestCase):
         self.assertTrue(all(len(call["utterances"]) == 1 for call in calls))
         self.assertNotIn("\u672c\u516c\u4e3b", localized["accepted"][0]["semanticVi"])
 
+    @unittest.skipIf(vn_localizer is None, "CP2 localizer is not implemented")
+    def test_native_pass_receives_spoken_vietnamese_editorial_contract(self) -> None:
+        seen = []
+
+        def request(payload):
+            seen.append(payload)
+            key = "semanticVi" if payload["mode"] == "semantic" else "nativeVi"
+            return {"translations": [{"utteranceId": "u1", key: "Câu tự nhiên"}]}
+
+        vn_localizer.localize(
+            [{"utteranceId": "u1", "resolvedZh": "甲", "source_confidence": "high", "kind": "dialogue"}],
+            scene_memory={}, request=request, profile="vn_native_light_comedy")
+        contract = seen[1]["editorial_contract"]
+        self.assertIn("spoken Vietnamese", contract["prefer"])
+        self.assertIn("discourse particles", contract["prefer"])
+        self.assertIn("contextual wit without invented jokes", contract["prefer"])
+        self.assertIn("mechanically preserving the source subject", contract["avoid"])
+
     @unittest.skipIf(vn_quality is None, "CP2 quality checks are not implemented")
     def test_quality_detects_identity_loss_cjk_unresolved_and_forced_style(self) -> None:
         issues = vn_quality.deterministic_issues([
@@ -93,6 +111,8 @@ class SceneAwareLocalizationTests(unittest.TestCase):
         self.assertEqual("新学期", seen[0]["utterances"][0]["resolvedZh"])
         self.assertEqual("Năm học mới", seen[0]["utterances"][0]["semanticVi"])
         self.assertEqual("Năm học mới rồi", seen[0]["utterances"][0]["nativeVi"])
+        self.assertIn("STIFF_VI", seen[0]["criteria"])
+        self.assertIn("SEMANTIC_DRIFT", seen[0]["criteria"])
 
     @unittest.skipIf(vi_harness is None, "CP2 harness is not implemented")
     def test_text_only_harness_writes_ab_table_without_localizing_visual_or_unresolved_source(self) -> None:
@@ -115,6 +135,41 @@ class SceneAwareLocalizationTests(unittest.TestCase):
             self.assertEqual(["u1"], [item["utteranceId"] for item in artifact["accepted"]])
             self.assertEqual(["u2"], [item["utteranceId"] for item in artifact["review_required"]])
             self.assertEqual(["semantic", "native", "qa"], calls)
+
+    @unittest.skipIf(vi_harness is None, "CP2 harness is not implemented")
+    def test_full_reconstruction_fixture_has_lossless_typed_ab_coverage(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "multimodal_25s" / "full_source_reconstruction.json"
+        source = json.loads(fixture.read_text(encoding="utf-8"))
+        records = vi_harness.records_from_source_reconstruction(source)
+        calls = []
+
+        def request(payload):
+            calls.append(payload["mode"])
+            if payload["mode"] == "qa":
+                return {"issues": []}
+            key = "semanticVi" if payload["mode"] == "semantic" else "nativeVi"
+            return {"translations": [{"utteranceId": item["utteranceId"], key: "Câu tiếng Việt tự nhiên"} for item in payload["utterances"]]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            vi_harness.run_text_ab(records, Path(directory), scene_evidence={}, request=request)
+            root = Path(directory)
+            artifact = json.loads((root / "multimodal_vi_ab_25s.json").read_text(encoding="utf-8"))
+            markdown = (root / "multimodal_vi_ab_25s.md").read_text(encoding="utf-8")
+
+        self.assertEqual(23, len(records))
+        self.assertEqual({"sourceRecords": 23, "dialogueResolved": 19, "dialogueUnresolved": 1, "visualOnly": 3, "semanticTranslated": 19, "nativeTranslated": 19, "qaReviewed": 19}, artifact["coverage"])
+        self.assertEqual([str(item["utteranceId"]) for item in records], [str(item["utteranceId"]) for item in artifact["records"]])
+        self.assertEqual({"DIALOGUE": 19, "UNRESOLVED_DIALOGUE": 1, "VISUAL_ONLY": 3}, {kind: sum(item["type"] == kind for item in artifact["records"]) for kind in ("DIALOGUE", "UNRESOLVED_DIALOGUE", "VISUAL_ONLY")})
+        self.assertEqual({"RESOLVED_DIALOGUE": 19, "UNRESOLVED_DIALOGUE": 1, "VISUAL_ONLY": 3}, {kind: sum(item["classification"] == kind for item in artifact["records"]) for kind in ("RESOLVED_DIALOGUE", "UNRESOLVED_DIALOGUE", "VISUAL_ONLY")})
+        accepted = {str(item["utteranceId"]): item for item in artifact["accepted"]}
+        self.assertEqual(19, len(accepted))
+        self.assertTrue(all(item["semanticVi"] and item["nativeVi"] for item in accepted.values()))
+        self.assertEqual(["22"], [str(item["utteranceId"]) for item in artifact["review_required"]])
+        self.assertNotIn("22", accepted)
+        self.assertTrue(all(str(item["utteranceId"]) not in accepted for item in artifact["records"] if item["classification"] == "VISUAL_ONLY"))
+        self.assertIn("| # | Time | Type |", markdown)
+        self.assertIn("sourceRecords: 23", markdown)
+        self.assertEqual(["semantic", "native", "qa"], calls)
 
     @unittest.skipIf(vi_harness is None, "CP2 harness is not implemented")
     def test_observed_harness_persists_call_states_and_atomic_success_artifacts(self) -> None:

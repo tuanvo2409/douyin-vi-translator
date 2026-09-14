@@ -5,6 +5,7 @@ import re
 from typing import Mapping, Sequence
 
 _CJK = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
+_QA_CRITERIA = ["SEMANTIC_DRIFT", "STIFF_VI", "TRANSLATIONESE", "ROLEPLAY_INCONSISTENCY", "FORCED_HUMOR", "FORCED_SLANG"]
 
 
 def deterministic_issues(records: Sequence[Mapping[str, object]]) -> list[dict[str, str]]:
@@ -41,7 +42,7 @@ def apply_one_repair(original: Mapping[str, object], repair: Mapping[str, object
 def llm_issues(records: Sequence[Mapping[str, object]], request) -> list[dict[str, str]]:
     """Ask one injected evaluator, with all three texts needed to judge drift."""
     utterances = [{key: record.get(key, "") for key in ("utteranceId", "resolvedZh", "semanticVi", "nativeVi", "source_confidence")} for record in records]
-    document = request({"mode": "qa", "utterances": utterances})
+    document = request({"mode": "qa", "utterances": utterances, "criteria": _QA_CRITERIA})
     if not isinstance(document, dict) or set(document) != {"issues"} or not isinstance(document["issues"], list):
         raise ValueError("quality response schema is invalid")
     result = []

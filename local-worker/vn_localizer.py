@@ -12,6 +12,26 @@ PROFILES = {
 }
 _CJK = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
 
+_NATIVE_EDITORIAL_CONTRACT = {
+    "prefer": [
+        "spoken Vietnamese",
+        "discourse particles",
+        "omit pronouns / subjects when natural",
+        "shorter colloquial phrasing",
+        "attitude and roleplay consistency from scene memory",
+        "contextual wit without invented jokes",
+    ],
+    "avoid": [
+        "các bạn ... sao? constructions unless context requires them",
+        "repeated nouns when Vietnamese can omit them",
+        "literal source word order",
+        "overly formal Tôi/Bạn defaults",
+        "mechanically preserving the source subject",
+        "flat roleplay declarations",
+        "blindly forcing tao/mày",
+    ],
+}
+
 
 def _valid_vi(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip()) and not _CJK.search(value)
@@ -37,12 +57,13 @@ def _validate_response(document: object, records: Sequence[Mapping[str, object]]
 def localize(records: Sequence[Mapping[str, object]], *, scene_memory: Mapping[str, object], request: Callable[[dict[str, object]], object], profile: str) -> dict[str, list[dict[str, object]]]:
     if profile not in PROFILES:
         raise ValueError("unsupported localization profile")
-    resolved = [dict(item) for item in records if item.get("kind") == "dialogue" and item.get("source_confidence") not in {"low", "unresolved"}]
-    review_required = [{"utteranceId": item["utteranceId"], "reason": "UNRESOLVED_SOURCE"} for item in records if item.get("kind") == "dialogue" and item.get("source_confidence") in {"low", "unresolved"}]
+    unresolved = lambda item: item.get("classification") == "UNRESOLVED_DIALOGUE" or item.get("type") == "UNRESOLVED_DIALOGUE" or item.get("source_confidence") in {"low", "unresolved"}
+    resolved = [dict(item) for item in records if item.get("kind") == "dialogue" and not unresolved(item)]
+    review_required = [{"utteranceId": item["utteranceId"], "reason": "UNRESOLVED_SOURCE"} for item in records if item.get("kind") == "dialogue" and unresolved(item)]
     if not resolved:
         return {"accepted": [], "review_required": review_required}
     semantic = _validate_response(request({"mode": "semantic", "utterances": resolved, "scene_memory": dict(scene_memory)}), resolved, "semanticVi")
     semantic_records = [{**item, "semanticVi": semantic[str(item["utteranceId"])]} for item in resolved]
-    native = _validate_response(request({"mode": "native", "utterances": semantic_records, "scene_memory": dict(scene_memory), "profile": PROFILES[profile]}), semantic_records, "nativeVi")
+    native = _validate_response(request({"mode": "native", "utterances": semantic_records, "scene_memory": dict(scene_memory), "profile": PROFILES[profile], "editorial_contract": _NATIVE_EDITORIAL_CONTRACT}), semantic_records, "nativeVi")
     accepted = [{**item, "nativeVi": native[str(item["utteranceId"])], "style": {"register": str(scene_memory.get("register", "neutral")), "humorLevel": PROFILES[profile]["humor"]}} for item in semantic_records]
     return {"accepted": accepted, "review_required": review_required}
