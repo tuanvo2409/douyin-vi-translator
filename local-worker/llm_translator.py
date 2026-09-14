@@ -234,7 +234,7 @@ def refine_for_tts_overflow(
     context_card: Optional[Dict[str, Any]] = None, glossary: tuple[Dict[str, Any], ...] = (),
 ) -> str | None:
     """One bounded semantic retry for a measured TTS overflow; never truncate text locally."""
-    active_key = gemini_pool.get_key() or api_key
+    active_key = _select_gemini_key(api_key)
     if not active_key:
         return None
     slot_ms = max(1, int(segment.get("endMs", 0)) - int(segment.get("startMs", 0)))
@@ -347,6 +347,17 @@ def translate_with_gemini_single_chunk(
 from gemini_pool import gemini_pool
 
 
+def _select_gemini_key(api_key: Optional[str] = None) -> Optional[str]:
+    """Never bypass a configured-but-cooling pool with a fallback credential."""
+    selected = gemini_pool.get_key()
+    if selected:
+        return selected
+    if gemini_pool.keys:
+        logger.warning("Gemini provider unavailable: NO_READY_GEMINI_KEY")
+        return None
+    return api_key or os.getenv("GEMINI_API_KEY")
+
+
 def translate_with_gemini(
     segments: List[Dict[str, Any]],
     api_key: Optional[str] = None,
@@ -369,7 +380,7 @@ def translate_with_gemini(
         # Thử xoay tua các key trong pool
         max_attempts = max(3, len(gemini_pool.keys) * 2)
         for attempt in range(max_attempts):
-            active_key = gemini_pool.get_key() or api_key
+            active_key = _select_gemini_key(api_key)
             if not active_key:
                 break
                 
@@ -600,7 +611,7 @@ YÊU CẦU BẮT BUỘC:
 }}
 """
 
-    key = gemini_pool.get_key() or api_key or os.getenv("GEMINI_API_KEY")
+    key = _select_gemini_key(api_key)
     if not key:
         return [
             {"type": "contradiction", "label": "🎭 Mâu Thuẫn", "text": "Phòng chật không phải do đồ nhiều đâu!"},
@@ -688,7 +699,7 @@ Hãy tạo ra:
   "full_post": "..."
 }}
 """
-    key = gemini_pool.get_key() or api_key or os.getenv("GEMINI_API_KEY")
+    key = _select_gemini_key(api_key)
     if key:
         for model_name in ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.0-flash"]:
             try:

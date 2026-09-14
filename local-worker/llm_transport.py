@@ -7,6 +7,8 @@ from typing import Any, Callable, Mapping
 
 import requests
 
+from gemini_pool import gemini_pool
+
 
 class ProviderError(RuntimeError):
     def __init__(self, classification: str, *, transient: bool = False) -> None:
@@ -46,17 +48,21 @@ class StructuredGeminiTransport:
 
 def gemini_json_transport(*, model: str, api_key: str | None = None) -> StructuredGeminiTransport:
     """Build the live provider adapter without exposing its credential in diagnostics."""
-    key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not key:
-        raise ProviderError("PROVIDER_UNAVAILABLE")
-
     def request(payload: Mapping[str, object]) -> object:
+        key = gemini_pool.get_key()
+        if not key:
+            if gemini_pool.keys:
+                raise ProviderError("NO_READY_GEMINI_KEY")
+            key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if not key:
+            raise ProviderError("PROVIDER_UNAVAILABLE")
         url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + key
         try:
             response = requests.post(url, json=dict(payload), timeout=60)
         except requests.RequestException as error:
             raise ProviderError("PROVIDER_UNAVAILABLE", transient=True) from error
         if response.status_code != 200:
+            gemini_pool.report_error(key, response.status_code)
             raise ProviderError("HTTP_" + str(response.status_code), transient=response.status_code == 429 or response.status_code >= 500)
         try:
             text = response.json()["candidates"][0]["content"]["parts"][0]["text"]

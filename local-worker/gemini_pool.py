@@ -12,7 +12,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("dubvi.gemini_pool")
 
@@ -97,8 +97,7 @@ class GeminiKeyPool:
                 self.current_idx = (idx + 1) % n
                 return candidate
 
-        earliest_key = min(self.keys, key=lambda k: self.cooldowns.get(k, 0))
-        return earliest_key
+        return None
 
     def report_error(self, key: str, status_code: int = 429) -> None:
         if not key:
@@ -118,14 +117,6 @@ class GeminiKeyPool:
             "total": len(self.keys),
             "active": active,
             "cooling": cooling,
-            "keys": [
-                {
-                    "masked": f"...{k[-6:]}" if len(k) > 6 else k,
-                    "is_ready": self.cooldowns.get(k, 0) <= now,
-                    "cooldown_remaining": max(0, int(self.cooldowns.get(k, 0) - now)),
-                }
-                for k in self.keys
-            ],
         }
 
 

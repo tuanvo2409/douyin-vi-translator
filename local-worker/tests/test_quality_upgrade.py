@@ -122,7 +122,7 @@ class LocalizationStructureTests(unittest.TestCase):
             "candidates": [{"content": {"parts": [{"text": '{"translations":[{"position":2,"translatedTextVi":"Bản ngắn"}]}' }]}}]
         }
         cue = {**self.cues[0], "translatedTextVi": "Bản hiện tại dài hơn"}
-        with patch.object(llm_translator.gemini_pool, "get_key", return_value=None), patch.object(llm_translator.requests, "post", return_value=response) as post:
+        with patch.object(llm_translator.gemini_pool, "keys", []), patch.object(llm_translator.gemini_pool, "get_key", return_value=None), patch.object(llm_translator.requests, "post", return_value=response) as post:
             self.assertEqual("Bản ngắn", llm_translator.refine_for_tts_overflow(cue, api_key="test-key", measured_ms=2400))
         post.assert_called_once()
 
