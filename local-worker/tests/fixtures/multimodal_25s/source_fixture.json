@@ -1,0 +1,17 @@
+{
+  "fixture_version": 1,
+  "duration_ms": 25300,
+  "av_windows": [
+    {"start_ms": 0, "end_ms": 25300, "spoken": [{"start_ms": 500, "end_ms": 1500, "text_zh": "新学期"}, {"start_ms": 1500, "end_ms": 3500, "text_zh": "我攒了重金买了新书包，这书包可贵"}, {"start_ms": 6500, "end_ms": 7500, "text_zh": "你们管这叫垃圾？"}, {"start_ms": 7500, "end_ms": 9000, "text_zh": "本公主说话"}], "visual_only": [{"start_ms": 0, "end_ms": 500, "text_zh": "当你穿进老钱班"}, {"start_ms": 5500, "end_ms": 6500, "text_zh": "垃圾桶"}]}
+  ],
+  "cues": [
+    {"cue_id": "cue-0", "position": 0, "start_ms": 500, "end_ms": 1500, "asr_text_zh": "新字期", "ocr_text_zh": "新字期"},
+    {"cue_id": "cue-1", "position": 1, "start_ms": 1500, "end_ms": 2700, "asr_text_zh": "我攒了重金买了新书包", "ocr_text_zh": "我攒了重金买了新书包"},
+    {"cue_id": "cue-2", "position": 2, "start_ms": 2600, "end_ms": 3500, "asr_text_zh": "这书包可贵", "ocr_text_zh": "这书包可贵"},
+    {"cue_id": "cue-5", "position": 5, "start_ms": 6500, "end_ms": 7500, "asr_text_zh": "你們快撤就垃圾", "ocr_text_zh": "你們快撤就垃圾"},
+    {"cue_id": "cue-6", "position": 6, "start_ms": 7500, "end_ms": 9000, "asr_text_zh": "本公司說把你聽到了", "ocr_text_zh": "本公司說把你聽到了"},
+    {"cue_id": "cue-22", "position": 22, "start_ms": 23500, "end_ms": 25300, "asr_text_zh": "我模仿被我阿玛签了", "ocr_text_zh": "我模仿被我阿玛签了"},
+    {"cue_id": "cue-23", "position": 23, "start_ms": 24500, "end_ms": 25300, "asr_text_zh": "", "ocr_text_zh": ""}
+  ],
+  "unresolved": {"start_ms": 23500, "end_ms": 25300, "asr_text_zh": "甲", "ocr_text_zh": "乙"}
+}
