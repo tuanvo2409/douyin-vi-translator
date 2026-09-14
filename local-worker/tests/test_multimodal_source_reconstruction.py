@@ -21,6 +21,34 @@ utterance_builder = _optional_module("utterance_builder")
 source_harness = _optional_module("multimodal_source_harness")
 
 FIXTURE = Path(__file__).parent / "fixtures" / "multimodal_25s" / "source_fixture.json"
+PERSISTED_FIXTURE = Path(__file__).parent / "fixtures" / "multimodal_25s" / "persisted_runtime.json"
+
+
+def _canonical_av(*, utterances=None, visual_only=None):
+    return {
+        "windowStartMs": 0,
+        "windowEndMs": 25_300,
+        "scene": {"summary": "classroom comedy", "tone": "comic", "register": "colloquial"},
+        "utterances": list(utterances or []),
+        "visualOnly": list(visual_only or []),
+    }
+
+
+def _av_utterance(start, end, spoken, subtitle=None, *, confidence="HIGH"):
+    return {
+        "startMs": start,
+        "endMs": end,
+        "spokenZh": spoken,
+        "subtitleZh": spoken if subtitle is None else subtitle,
+        "speakerRef": "speaker-1",
+        "intent": "statement",
+        "emotion": "neutral",
+        "confidence": confidence,
+    }
+
+
+def _av_visual(start, end, text, *, confidence="HIGH"):
+    return {"startMs": start, "endMs": end, "textZh": text, "confidence": confidence}
 
 
 class MultimodalSourceContractTests(unittest.TestCase):
@@ -39,11 +67,11 @@ class MultimodalSourceContractTests(unittest.TestCase):
             calls.append(_payload)
             if len(calls) == 1:
                 raise llm_transport.ProviderError("HTTP_429", transient=True)
-            return {"utterances": [{"start_ms": 0, "end_ms": 1, "text_zh": "新学期"}], "visual_only": []}
+            return _canonical_av(utterances=[_av_utterance(0, 1, "新学期")])
 
         transport = llm_transport.StructuredGeminiTransport(request=request, max_attempts=2)
-        result = transport.call({"contents": []}, required_keys={"utterances", "visual_only"})
-        self.assertEqual("新学期", result["utterances"][0]["text_zh"])
+        result = transport.call({"contents": []}, required_keys={"windowStartMs", "windowEndMs", "scene", "utterances", "visualOnly"})
+        self.assertEqual("新学期", result["utterances"][0]["spokenZh"])
         self.assertEqual(2, len(calls))
         with self.assertRaises(llm_transport.StructuredResponseError):
             llm_transport.validate_structured_document({"utterances": []}, {"utterances", "visual_only"})
@@ -51,14 +79,14 @@ class MultimodalSourceContractTests(unittest.TestCase):
     @unittest.skipIf(source_reconciler is None or utterance_builder is None, "CP1 reconciliation is not implemented")
     def test_fixture_repairs_av_supported_dialogue_without_promoting_visual_or_unresolved_text(self) -> None:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        result = source_reconciler.reconcile_source(fixture["cues"], fixture["av_windows"], fixture["unresolved"])
-        by_text = {item["text_zh"]: item for item in result["dialogue"]}
+        result = source_reconciler.reconcile_source(fixture["cues"], fixture["av_analysis"], fixture["unresolved"])
+        by_text = {item["resolvedZh"]: item for item in result["dialogue"] if item["resolvedZh"]}
         self.assertIn("新学期", by_text)
         self.assertIn("我攒了重金买了新书包，这书包可贵", by_text)
         self.assertIn("你们管这叫垃圾？", by_text)
         self.assertIn("本公主说话", by_text)
-        self.assertEqual(["当你穿进老钱班", "垃圾桶"], [item["text_zh"] for item in result["visual_only"]])
-        self.assertEqual("unresolved", result["unresolved"][0]["status"])
+        self.assertEqual(["当你穿进老钱班", "垃圾桶"], [item["textZh"] for item in result["visual_only"]])
+        self.assertEqual("UNRESOLVED", result["unresolved"][0]["flags"][0])
         utterances = utterance_builder.build_utterances(result["dialogue"], fixture["cues"])
         self.assertEqual(["cue-1", "cue-2"], utterances[1]["cue_ids"])
         self.assertEqual(["cue-22", "cue-23"], utterances[-1]["cue_ids"])
@@ -69,7 +97,7 @@ class MultimodalSourceContractTests(unittest.TestCase):
             av_analyzer.validate_av_analysis({"utterances": "not-a-list", "visual_only": []})
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "av_analysis.json"
-            av_analyzer.persist_diagnostics(target, {"utterances": [], "visual_only": [], "debug": "x" * 50_000})
+            av_analyzer.persist_diagnostics(target, {**_canonical_av(), "debug": "x" * 50_000})
             self.assertLessEqual(target.stat().st_size, av_analyzer.MAX_DIAGNOSTIC_BYTES)
 
     @unittest.skipIf(av_analyzer is None or llm_transport is None, "CP1 analyzer is not implemented")
@@ -81,7 +109,7 @@ class MultimodalSourceContractTests(unittest.TestCase):
 
         def request(_payload):
             calls.append(None)
-            return {"utterances": [{"start_ms": 0, "end_ms": 1, "text_zh": "新学期"}], "visual_only": []}
+            return _canonical_av(utterances=[_av_utterance(0, 1, "新学期")])
 
         with tempfile.TemporaryDirectory() as directory:
             media, cache = Path(directory) / "source.mp4", Path(directory) / "av_analysis.json"
@@ -102,8 +130,97 @@ class MultimodalSourceContractTests(unittest.TestCase):
                 {path.name for path in created},
             )
             artifact = json.loads((Path(directory) / "multimodal_source_ab.json").read_text(encoding="utf-8"))
-            self.assertEqual("新学期", artifact["after"][0]["text_zh"])
-            self.assertEqual("unresolved", artifact["unresolved"][0]["status"])
+            self.assertEqual("新学期", next(item["resolvedZh"] for item in artifact["after"] if item.get("resolvedZh")))
+            self.assertEqual("UNRESOLVED", artifact["unresolved"][0]["flags"][0])
+
+    @unittest.skipIf(av_analyzer is None, "CP1 analyzer is not implemented")
+    def test_canonical_av_contract_is_strict_and_preserves_spoken_subtitle_fields(self) -> None:
+        document = _canonical_av(
+            utterances=[_av_utterance(500, 1500, "新学期", "新學期")],
+            visual_only=[_av_visual(0, 500, "当你穿进老钱班")],
+        )
+        self.assertEqual(document, av_analyzer.validate_av_analysis(document))
+        with self.assertRaises(ValueError):
+            av_analyzer.validate_av_analysis({"utterances": [], "visual_only": []})
+
+    @unittest.skipIf(source_reconciler is None, "CP1 reconciliation is not implemented")
+    def test_reconciler_consumes_canonical_analyzer_output_directly(self) -> None:
+        cues = [{
+            "cue_id": "cue-7",
+            "position": 7,
+            "start_ms": 500,
+            "end_ms": 1500,
+            "asr_text_zh": "新字期",
+            "ocr_text_zh": "新字期",
+        }]
+        result = source_reconciler.reconcile_source(
+            cues,
+            _canonical_av(utterances=[_av_utterance(500, 1500, "新学期", "新學期")]),
+        )
+        self.assertEqual("新学期", result["dialogue"][0]["resolvedZh"])
+        self.assertEqual([7], result["dialogue"][0]["positions"])
+        self.assertEqual({"asr", "ocr", "avSpoken", "avSubtitle"}, set(result["dialogue"][0]["evidence"]))
+        self.assertEqual("新学期", result["dialogue"][0]["evidence"]["avSpoken"])
+
+    @unittest.skipIf(source_reconciler is None, "CP1 reconciliation is not implemented")
+    def test_visual_only_is_never_emitted_as_dialogue(self) -> None:
+        result = source_reconciler.reconcile_source(
+            [],
+            _canonical_av(visual_only=[_av_visual(0, 500, "垃圾桶")]),
+        )
+        self.assertEqual([], result["dialogue"])
+        self.assertEqual("VISUAL_ONLY", result["visual_only"][0]["type"])
+        self.assertEqual("垃圾桶", result["visual_only"][0]["textZh"])
+
+    @unittest.skipIf(source_reconciler is None, "CP1 reconciliation is not implemented")
+    def test_overlapping_duplicate_av_cues_collapse_without_losing_numeric_identity(self) -> None:
+        result = source_reconciler.reconcile_source(
+            [{"cue_id": "cue-22", "position": 22, "start_ms": 0, "end_ms": 1000, "asr_text_zh": "", "ocr_text_zh": ""}],
+            _canonical_av(utterances=[
+                _av_utterance(100, 700, "本公主说话"),
+                _av_utterance(650, 900, "本公主说话"),
+            ]),
+        )
+        self.assertEqual(1, len(result["dialogue"]))
+        self.assertEqual([22], result["dialogue"][0]["positions"])
+        self.assertNotIn("AV_CONFLICT", result["dialogue"][0]["flags"])
+
+    @unittest.skipIf(source_reconciler is None, "CP1 reconciliation is not implemented")
+    def test_overlapping_conflicting_av_cues_are_bounded_and_unresolved(self) -> None:
+        result = source_reconciler.reconcile_source(
+            [{"cue_id": "cue-22", "position": 22, "start_ms": 0, "end_ms": 1000, "asr_text_zh": "甲", "ocr_text_zh": "乙"}],
+            _canonical_av(utterances=[
+                _av_utterance(100, 700, "甲"),
+                _av_utterance(650, 900, "乙"),
+            ]),
+        )
+        self.assertEqual(1, len(result["dialogue"]))
+        self.assertIsNone(result["dialogue"][0]["resolvedZh"])
+        self.assertIn("AV_CONFLICT", result["dialogue"][0]["flags"])
+        self.assertLessEqual(len(result["dialogue"][0]["alternatives"]), 2)
+
+    @unittest.skipIf(source_harness is None, "CP1 harness is not implemented")
+    def test_persisted_runtime_loader_reconstructs_full_23_row_fixture_without_expected_input(self) -> None:
+        self.assertTrue(hasattr(source_harness, "run_persisted_runtime"))
+        with tempfile.TemporaryDirectory() as directory:
+            result = source_harness.run_persisted_runtime(PERSISTED_FIXTURE, Path(directory))
+            self.assertEqual(23, result["metrics"]["total"])
+            self.assertEqual(19, result["metrics"]["resolved_dialogue"])
+            self.assertEqual(1, result["metrics"]["unresolved_dialogue"])
+            self.assertEqual(3, result["metrics"]["visual_only"])
+            resolved = {item["resolvedZh"] for item in result["records"] if item.get("resolvedZh")}
+            self.assertIn("我攒了重金买了新书包，这书包可贵", resolved)
+            self.assertIn("你们管这叫垃圾？", resolved)
+            self.assertIn("本公主说话", resolved)
+            self.assertIsNone(result["records"][-1]["resolvedZh"])
+            markdown = (Path(directory) / "multimodal_source_ab.md").read_text(encoding="utf-8")
+            rows = [line for line in markdown.splitlines() if line.startswith("|") and line.split("|")[1].strip().isdigit()]
+            self.assertEqual(23, len(rows))
+            self.assertEqual({12}, {len(row.split("|")) - 1 for row in rows})
+            self.assertEqual(
+                {"av_analysis.json", "source_reconstruction.json", "multimodal_source_ab.json", "multimodal_source_ab.md"},
+                {path.name for path in Path(directory).iterdir()},
+            )
 
 
 if __name__ == "__main__":
