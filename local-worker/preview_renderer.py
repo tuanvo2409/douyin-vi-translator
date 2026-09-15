@@ -12,6 +12,8 @@ import subprocess
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from subtitle_layout import SubtitleLayoutPolicy, write_ass_subtitles as _write_layout_ass_subtitles
+
 
 class PreviewRenderError(RuntimeError):
     """The cached preview inputs cannot be rendered safely."""
@@ -203,26 +205,16 @@ def build_ffmpeg_command(
     return command
 
 
-def write_ass_subtitles(cues: Sequence[Mapping[str, object]], path: Path, *, width: int = 720, height: int = 1280) -> None:
-    """Write a small opaque subtitle plate at the source's native resolution."""
+def write_ass_subtitles(
+    cues: Sequence[Mapping[str, object]],
+    path: Path,
+    *,
+    width: int = 720,
+    height: int = 1280,
+) -> dict[str, object]:
+    """Write measured, bounded subtitle plates at the source's native resolution."""
 
-    lines = [
-        "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {width}", f"PlayResY: {height}",
-        "[V4+ Styles]",
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        "Style: Default,Arial,38,&H00FFFFFF,&H00FFFFFF,&H00000000,&H99000000,0,0,0,0,100,100,0,0,3,8,0,5,24,24,0,1",
-        "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-    ]
-    for cue in cues:
-        text = str(cue.get("translatedTextVi") or "").strip()
-        if not text:
-            continue
-        start = _ass_time(int(cue["scheduledStartMs"]))
-        end = _ass_time(int(cue["scheduledEndMs"]))
-        text = text.replace("{", r"\{").replace("}", r"\}").replace("\n", r"\N")
-        lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{{\\an5\\pos({width // 2},{int(height * 0.70)})}}{text}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return _write_layout_ass_subtitles(cues, path, width=width, height=height)
 
 
 def render_preview(command: Sequence[str]) -> None:
