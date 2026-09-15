@@ -12,6 +12,7 @@ from scene_memory import build_scene_memory, build_terminology_evidence
 from vn_localizer import localize
 from llm_transport import StructuredResponseError
 from vn_quality import apply_one_repair, deterministic_issues, llm_issues, validate_qa_document
+from cp2_gemini_adapter import validate_scene_document
 
 
 DEFAULT_LOCALIZATION_MODEL = "gemini-2.5-flash"
@@ -187,8 +188,11 @@ def _state_is_compatible(state: object, input_contract: Mapping[str, str], recor
             return False
         if stage.get("status") == "completed":
             payload = stage.get("payload")
-            if name == "scene" and (not isinstance(payload, dict) or set(payload) != {"summary", "tone", "register", "speakers", "relationships", "pronoun_policy", "roleplay_terms", "running_jokes", "glossary"}):
-                return False
+            if name == "scene":
+                try:
+                    validate_scene_document(payload)
+                except ValueError:
+                    return False
             if name == "semantic" and not _valid_translation_payload(payload, "semanticVi", expected_ids):
                 return False
             if name == "native" and not _valid_translation_payload(payload, "nativeVi", expected_ids):
@@ -335,9 +339,8 @@ def run_observed_text_ab(records: Sequence[Mapping[str, object]], output_dir: Pa
             scene_evidence = scene_stage["payload"]
         else:
             scene_evidence = observer.call("scene", scene_request, {"mode": "scene", "utterances": [dict(item) for item in normalized_records if item.get("kind") == "dialogue"]})
-            if not isinstance(scene_evidence, Mapping):
-                raise ValueError("scene response is invalid")
-            observer.stage("scene", dict(scene_evidence))
+            scene_evidence = validate_scene_document(scene_evidence)
+            observer.stage("scene", scene_evidence)
 
         def observed_request(payload):
             operation = str(payload["mode"])

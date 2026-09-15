@@ -44,7 +44,7 @@ def _valid_vi(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip()) and not _CJK.search(value)
 
 
-def _validate_response(document: object, records: Sequence[Mapping[str, object]], key: str) -> dict[str, str]:
+def validate_translation_document(document: object, records: Sequence[Mapping[str, object]], key: str) -> dict[str, str]:
     if not isinstance(document, dict) or set(document) != {"translations"} or not isinstance(document["translations"], list):
         raise ValueError("localization response schema is invalid")
     expected = {str(item["utteranceId"]) for item in records}
@@ -82,12 +82,12 @@ def localize(records: Sequence[Mapping[str, object]], *, scene_memory: Mapping[s
     if not resolved:
         return {"accepted": [], "review_required": review_required}
     semantic_input = _with_neighbors(resolved)
-    semantic = _validate_response(request({"mode": "semantic", "utterances": semantic_input, "scene_memory": dict(scene_memory), "terminology_evidence": list(scene_memory.get("terminologyEvidence", [])), "terminology_guidance": _TERMINOLOGY_GUIDANCE, "localization_profile": profile}), semantic_input, "semanticVi")
+    semantic = validate_translation_document(request({"mode": "semantic", "utterances": semantic_input, "scene_memory": dict(scene_memory), "terminology_evidence": list(scene_memory.get("terminologyEvidence", [])), "terminology_guidance": _TERMINOLOGY_GUIDANCE, "localization_profile": profile}), semantic_input, "semanticVi")
     if on_stage is not None:
         on_stage("semantic", [{"utteranceId": item["utteranceId"], "semanticVi": semantic[str(item["utteranceId"])]} for item in resolved])
     semantic_records = [{**item, "semanticVi": semantic[str(item["utteranceId"])]} for item in resolved]
     native_input = _with_neighbors(semantic_records)
-    native = _validate_response(request({"mode": "native", "utterances": native_input, "scene_memory": dict(scene_memory), "terminology_evidence": list(scene_memory.get("terminologyEvidence", [])), "terminology_guidance": _TERMINOLOGY_GUIDANCE, "localization_profile": profile, "profile": PROFILES[profile], "editorial_contract": _NATIVE_EDITORIAL_CONTRACT}), native_input, "nativeVi")
+    native = validate_translation_document(request({"mode": "native", "utterances": native_input, "scene_memory": dict(scene_memory), "terminology_evidence": list(scene_memory.get("terminologyEvidence", [])), "terminology_guidance": _TERMINOLOGY_GUIDANCE, "localization_profile": profile, "profile": PROFILES[profile], "editorial_contract": _NATIVE_EDITORIAL_CONTRACT}), native_input, "nativeVi")
     if on_stage is not None:
         on_stage("native", [{"utteranceId": item["utteranceId"], "nativeVi": native[str(item["utteranceId"])]} for item in resolved])
     accepted = [{**item, "nativeVi": native[str(item["utteranceId"])], "style": {"register": str(scene_memory.get("register", "neutral")), "humorLevel": PROFILES[profile]["humor"]}} for item in semantic_records]
