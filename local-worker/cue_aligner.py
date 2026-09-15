@@ -175,27 +175,43 @@ def _align_dialogue_row(
     flags = _ordered_unique([*_flags(record), *qa_flags])
     if "SOURCE_UNCERTAIN" in flags:
         explicit_review = True
-    chunks = _split_for_slots(native, len(positions))
-    ranges = _slot_ranges(start_ms, end_ms, positions, source_cues)
-    groups = _group_positions(positions, ranges, len(chunks))
     cues: list[dict[str, object]] = []
-    for index, (chunk, group) in enumerate(zip(chunks, groups)):
-        group_positions, group_range = group
-        cue_start, cue_end = group_range
+    if not positions:
         cues.append({
-            "position": group_positions[0],
-            "startMs": cue_start,
-            "endMs": cue_end,
-            "translatedTextVi": chunk,
+            "position": None,
+            "startMs": start_ms,
+            "endMs": end_ms,
+            "translatedTextVi": native,
             "utteranceId": identifier,
-            "sourcePositions": list(group_positions),
-            "alignmentReason": "semantic_phrase_boundary_and_cue_duration",
+            "sourcePositions": [],
+            "alignmentReason": "whole_utterance_without_source_cues",
             "diagnostics": {
-                "chunkIndex": index,
-                "chunkCount": len(chunks),
-                "timingBasis": "source_cue_ranges" if source_cues is not None else "utterance_range_partition",
+                "chunkIndex": 0,
+                "chunkCount": 1,
+                "timingBasis": "utterance_range_no_cues",
             },
         })
+    else:
+        chunks = _split_for_slots(native, len(positions))
+        ranges = _slot_ranges(start_ms, end_ms, positions, source_cues)
+        groups = _group_positions(positions, ranges, len(chunks))
+        for index, (chunk, group) in enumerate(zip(chunks, groups)):
+            group_positions, group_range = group
+            cue_start, cue_end = group_range
+            cues.append({
+                "position": group_positions[0],
+                "startMs": cue_start,
+                "endMs": cue_end,
+                "translatedTextVi": chunk,
+                "utteranceId": identifier,
+                "sourcePositions": list(group_positions),
+                "alignmentReason": "semantic_phrase_boundary_and_cue_duration",
+                "diagnostics": {
+                    "chunkIndex": index,
+                    "chunkCount": len(chunks),
+                    "timingBasis": "source_cue_ranges" if source_cues is not None else "utterance_range_partition",
+                },
+            })
     if _normalize_join(cues) != _normalize(native):
         raise CueAlignmentError(f"alignment text coverage failed for utterance {identifier}")
     result = {
@@ -262,8 +278,10 @@ def _text(record: Mapping[str, object], key: str) -> str:
 
 def _positions(record: Mapping[str, object]) -> list[object]:
     raw = record.get("positions", record.get("sourcePositions", record.get("cuePositions", [])))
-    if not isinstance(raw, (list, tuple)) or not raw:
-        raise CueAlignmentError(f"utterance {record.get('utteranceId')} has no source positions")
+    if raw is None:
+        return []
+    if not isinstance(raw, (list, tuple)):
+        raise CueAlignmentError("source positions must be a sequence")
     result = list(raw)
     if any(item is None for item in result):
         raise CueAlignmentError("source positions cannot contain null")

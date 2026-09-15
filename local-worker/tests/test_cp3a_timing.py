@@ -83,6 +83,20 @@ class CueAlignmentTests(unittest.TestCase):
         result = build_alignment([visual, _record("spoken")])
         self.assertEqual([], result["excluded"][0]["sourcePositions"])
 
+    def test_dialogue_without_positions_uses_one_whole_utterance_cue(self) -> None:
+        """Missing cue positions must not invent granular source evidence."""
+
+        result = build_alignment([_record("spoken", positions=[], start=4000, end=4800)])
+        row = result["dialogue"][0]
+        self.assertEqual([], row["sourcePositions"])
+        self.assertEqual(1, len(row["alignedCues"]))
+        cue = row["alignedCues"][0]
+        self.assertIsNone(cue["position"])
+        self.assertEqual([], cue["sourcePositions"])
+        self.assertEqual((4000, 4800), (cue["startMs"], cue["endMs"]))
+        self.assertEqual("Xin chào, mình đi nhé.", cue["translatedTextVi"])
+        self.assertEqual("utterance_range_no_cues", cue["diagnostics"]["timingBasis"])
+
     def test_source_uncertain_is_represented_but_remains_review_required(self) -> None:
         result = build_alignment([_record(flags=["SOURCE_UNCERTAIN"])])
         row = result["dialogue"][0]
