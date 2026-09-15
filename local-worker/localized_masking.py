@@ -28,6 +28,32 @@ def build_mask_plan(detections: list[dict[str, Any]], frame_size: tuple[int, int
     return plan
 
 
+def stabilize_mask_plan(
+    plan: list[dict[str, Any]], frame_size: tuple[int, int], *, lead_ms: int = 250, tail_ms: int = 500,
+    max_gap_ms: int = 750,
+) -> list[dict[str, Any]]:
+    """Turn nearby matching OCR snapshots into clipped, short-lived mask intervals."""
+    if min(lead_ms, tail_ms, max_gap_ms) < 0:
+        raise ValueError("mask stabilization values must be non-negative")
+    tracks: list[dict[str, Any]] = []
+    for item in sorted(plan, key=lambda value: int(value["timestampMs"])):
+        timestamp = _mask_time(item, "timestampMs")
+        bbox = _mask_bbox(item, frame_size)
+        track = next((candidate for candidate in tracks if timestamp - candidate["lastMs"] <= max_gap_ms and _intersects(candidate["bbox"], bbox)), None)
+        if track is None:
+            tracks.append({"firstMs": timestamp, "lastMs": timestamp, "bbox": bbox})
+            continue
+        track["lastMs"] = timestamp
+        track["bbox"] = _clip_bbox((
+            min(track["bbox"][0], bbox[0]), min(track["bbox"][1], bbox[1]),
+            max(track["bbox"][2], bbox[2]), max(track["bbox"][3], bbox[3]),
+        ), frame_size)
+    return [
+        {"startMs": max(0, track["firstMs"] - lead_ms), "endMs": track["lastMs"] + tail_ms, "bbox": track["bbox"]}
+        for track in sorted(tracks, key=lambda value: (value["firstMs"], value["bbox"]))
+    ]
+
+
 def repair_region(frame: np.ndarray, bbox: tuple[int, int, int, int], clean_plate: np.ndarray | None) -> tuple[np.ndarray, str]:
     """Prefer a visually similar prior clean patch, otherwise use local OpenCV repair."""
     x1, y1, x2, y2 = bbox
@@ -98,54 +124,109 @@ def apply_localized_masks(
     """Write a masked temporary video; the caller retains the original source unchanged."""
     if not plan:
         return build_mask_qc(plan_count=0, applied_count=0, residual_count=0)
+    point_plan, interval_plan = _partition_mask_plan(plan)
     capture = cv2.VideoCapture(str(source))
     if not capture.isOpened():
         raise RuntimeError("unable to open source for localized subtitle repair")
     width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = capture.get(cv2.CAP_PROP_FPS) or fps_hint
     target.parent.mkdir(parents=True, exist_ok=True)
-    transport = subprocess.Popen(
-        lossless_transport_command(str(source), str(target), width, height, fps), stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    if transport.stdin is None:
-        capture.release()
-        raise RuntimeError("unable to create localized subtitle repair transport")
-    previous_clean: np.ndarray | None = None
     previous_source: np.ndarray | None = None
     tracker = TemporalCJKTracker(hold_ms=900, frame_size=(width, height))
     plan_index = 0
-    ordered_plan = sorted(plan, key=lambda item: int(item["timestampMs"]))
+    ordered_plan = sorted(point_plan, key=lambda item: _mask_time(item, "timestampMs"))
     scene_id = 0
     applied = 0
     index = 0
+    transport: subprocess.Popen[bytes] | None = None
     try:
+        transport = subprocess.Popen(
+            lossless_transport_command(str(source), str(target), width, height, fps), stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if transport.stdin is None:
+            raise RuntimeError("unable to create localized subtitle repair transport")
         while True:
             ok, frame = capture.read()
             if not ok:
                 break
             timestamp = int(index * 1000 / fps)
             if _scene_changed(previous_source, frame):
-                previous_clean = None
                 scene_id += 1
             while plan_index < len(ordered_plan) and int(ordered_plan[plan_index]["timestampMs"]) <= timestamp:
                 item = ordered_plan[plan_index]
                 tracker.observe(int(item["timestampMs"]), [item["bbox"]], scene_id)
                 plan_index += 1
-            active = tracker.active_regions(timestamp, scene_id)
+            active = tracker.active_regions(timestamp, scene_id) + [
+                item["bbox"] for item in interval_plan if item["startMs"] <= timestamp <= item["endMs"]
+            ]
             repaired = frame
-            for bbox in active:
-                repaired, _method = repair_region(repaired, bbox, previous_clean)
+            for bbox in _unique_regions(active):
+                repaired, _method = repair_region(repaired, bbox, None)
                 applied += 1
-            previous_clean = repaired.copy()
             previous_source = frame.copy()
             transport.stdin.write(repaired.tobytes())
             index += 1
     finally:
         capture.release()
-        transport.stdin.close()
-    if transport.wait() != 0:
+        if transport is not None and transport.stdin is not None:
+            transport.stdin.close()
+    if transport is None or transport.wait() != 0:
         raise RuntimeError("localized subtitle repair produced no video")
     if not target.is_file() or target.stat().st_size == 0:
         raise RuntimeError("localized subtitle repair produced no video")
     return build_mask_qc(plan_count=len(plan), applied_count=applied, residual_count=0)
+
+
+def _partition_mask_plan(plan: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    points: list[dict[str, Any]] = []
+    intervals: list[dict[str, Any]] = []
+    for item in plan:
+        if not isinstance(item, dict):
+            raise ValueError("mask plan item must be an object")
+        bbox = item.get("bbox")
+        if not isinstance(bbox, tuple) or len(bbox) != 4:
+            raise ValueError("mask plan bbox must be a four-value tuple")
+        if "timestampMs" in item:
+            points.append({"timestampMs": _mask_time(item, "timestampMs"), "bbox": bbox})
+        elif "startMs" in item and "endMs" in item:
+            start, end = _mask_time(item, "startMs"), _mask_time(item, "endMs")
+            if end < start:
+                raise ValueError("mask interval end must not precede start")
+            intervals.append({"startMs": start, "endMs": end, "bbox": bbox})
+        else:
+            raise ValueError("mask plan needs timestampMs or startMs/endMs")
+    return points, intervals
+
+
+def _mask_time(item: dict[str, Any], field: str) -> int:
+    value = item.get(field)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field} must be a non-negative integer")
+    return value
+
+
+def _mask_bbox(item: dict[str, Any], frame_size: tuple[int, int]) -> tuple[int, int, int, int]:
+    bbox = item.get("bbox")
+    if not isinstance(bbox, tuple) or len(bbox) != 4:
+        raise ValueError("mask plan bbox must be a four-value tuple")
+    clipped = _clip_bbox(bbox, frame_size)
+    if clipped[2] <= clipped[0] or clipped[3] <= clipped[1]:
+        raise ValueError("mask plan bbox must have area")
+    return clipped
+
+
+def _clip_bbox(bbox: tuple[int, int, int, int], frame_size: tuple[int, int]) -> tuple[int, int, int, int]:
+    width, height = frame_size
+    return (
+        max(0, min(width, int(bbox[0]))), max(0, min(height, int(bbox[1]))),
+        max(0, min(width, int(bbox[2]))), max(0, min(height, int(bbox[3]))),
+    )
+
+
+def _intersects(left: tuple[int, int, int, int], right: tuple[int, int, int, int]) -> bool:
+    return min(left[2], right[2]) > max(left[0], right[0]) and min(left[3], right[3]) > max(left[1], right[1])
+
+
+def _unique_regions(regions: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
+    return list(dict.fromkeys(regions))

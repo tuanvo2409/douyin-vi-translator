@@ -37,6 +37,51 @@ class LocalizedMaskPlanTests(unittest.TestCase):
         self.assertTrue(document["needsReview"])
         self.assertEqual(100, document["plannedRegions"])
 
+    def test_short_spatially_matching_detection_gap_becomes_one_bounded_interval(self) -> None:
+        stabilized = localized_masking.stabilize_mask_plan([
+            {"timestampMs": 300, "bbox": (10, 10, 30, 20)},
+            {"timestampMs": 700, "bbox": (12, 10, 32, 20)},
+        ], (100, 100), lead_ms=200, tail_ms=300, max_gap_ms=500)
+        self.assertEqual([{"startMs": 100, "endMs": 1000, "bbox": (10, 10, 32, 20)}], stabilized)
+
+    def test_temporal_stabilization_never_merges_distant_or_separate_regions(self) -> None:
+        stabilized = localized_masking.stabilize_mask_plan([
+            {"timestampMs": 100, "bbox": (10, 10, 30, 20)},
+            {"timestampMs": 200, "bbox": (60, 10, 80, 20)},
+            {"timestampMs": 2000, "bbox": (10, 10, 30, 20)},
+        ], (100, 100), lead_ms=0, tail_ms=0, max_gap_ms=500)
+        self.assertEqual(3, len(stabilized))
+        self.assertEqual((10, 10, 30, 20), stabilized[0]["bbox"])
+
+    def test_interval_mask_applies_only_inside_its_bounded_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, target = root / "source.mp4", root / "masked.mkv"
+            writer = cv2.VideoWriter(str(source), cv2.VideoWriter_fourcc(*"mp4v"), 2, (64, 48))
+            for _ in range(4):
+                writer.write(np.full((48, 64, 3), 120, dtype=np.uint8))
+            writer.release()
+            qc = localized_masking.apply_localized_masks(source, target, [{"startMs": 500, "endMs": 900, "bbox": (10, 10, 30, 25)}])
+            self.assertEqual(1, qc["appliedRegions"])
+
+    def test_active_interval_never_uses_an_unmasked_prior_frame_as_a_clean_plate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, target = root / "source.mp4", root / "masked.mkv"
+            writer = cv2.VideoWriter(str(source), cv2.VideoWriter_fourcc(*"mp4v"), 2, (64, 48))
+            frame = np.full((48, 64, 3), 120, dtype=np.uint8)
+            frame[10:25, 10:30] = 255
+            for _ in range(4):
+                writer.write(frame)
+            writer.release()
+            localized_masking.apply_localized_masks(source, target, [{"startMs": 500, "endMs": 900, "bbox": (10, 10, 30, 25)}])
+            capture = cv2.VideoCapture(str(target))
+            capture.read()  # The unmasked frame at 0 ms establishes the old false clean plate.
+            ok, repaired = capture.read()
+            capture.release()
+            self.assertTrue(ok)
+            self.assertLess(float(np.mean(repaired[10:25, 10:30])), 200.0)
+
     def test_masked_video_is_local_and_source_preserving(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
