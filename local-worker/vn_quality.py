@@ -39,8 +39,9 @@ QA_RESPONSE_SCHEMA = {
     "properties": {
         "issues": {
             "type": "ARRAY",
-            "items": {
-                "type": "OBJECT",
+                "items": {
+                    "type": "OBJECT",
+                    "additionalProperties": False,
                 "properties": {
                     "utteranceId": {"type": "STRING"},
                     "code": {"type": "STRING"},
@@ -53,6 +54,7 @@ QA_RESPONSE_SCHEMA = {
         },
     },
     "required": ["issues"],
+    "additionalProperties": False,
 }
 
 

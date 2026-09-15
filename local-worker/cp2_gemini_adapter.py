@@ -41,6 +41,7 @@ def _translation_schema(value_key: str) -> dict[str, object]:
                 "type": "ARRAY",
                 "items": {
                     "type": "OBJECT",
+                    "additionalProperties": False,
                     "properties": {
                         "utteranceId": {"type": "STRING"},
                         value_key: {"type": "STRING"},
@@ -50,6 +51,7 @@ def _translation_schema(value_key: str) -> dict[str, object]:
             },
         },
         "required": ["translations"],
+        "additionalProperties": False,
     }
 
 
@@ -60,6 +62,7 @@ SCENE_RESPONSE_SCHEMA = {
         "running_jokes": {"type": "ARRAY", "items": {"type": "STRING"}},
     },
     "required": list(_SCENE_FIELDS),
+    "additionalProperties": False,
 }
 OPERATION_SCHEMAS = {
     "scene": SCENE_RESPONSE_SCHEMA,
@@ -99,6 +102,8 @@ def _parity_node(expected: Mapping[str, object], actual: object, path: str, viol
         violations.append(path + ":TYPE")
     if bool(actual.get("nullable", False)) != bool(expected.get("nullable", False)):
         violations.append(path + ":NULLABLE")
+    if "additionalProperties" in expected and actual.get("additionalProperties") != expected["additionalProperties"]:
+        violations.append(path + ":ADDITIONAL_PROPERTIES")
     if "enum" in expected and actual.get("enum") != expected.get("enum"):
         violations.append(path + ":ENUM")
     expected_required = expected.get("required", [])
@@ -245,7 +250,13 @@ class CP2GeminiAdapter:
         if operation not in OPERATION_SCHEMAS:
             raise ValueError("unsupported CP2 operation")
         records = payload.get("utterances")
-        if not isinstance(records, list) or not all(isinstance(record, Mapping) and isinstance(record.get("utteranceId"), str) and record.get("utteranceId") for record in records):
+        identifiers = [record.get("utteranceId") for record in records] if isinstance(records, list) else []
+        if (
+            not isinstance(records, list)
+            or not all(isinstance(record, Mapping) for record in records)
+            or not all(isinstance(identifier, str) and identifier == identifier.strip() and identifier for identifier in identifiers)
+            or len(identifiers) != len(set(identifiers))
+        ):
             raise ValueError("CP2 utterance identity is invalid")
         self.logical_call_count += 1
         try:

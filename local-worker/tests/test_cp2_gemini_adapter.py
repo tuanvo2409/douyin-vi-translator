@@ -135,12 +135,16 @@ class CP2GeminiAdapterTests(unittest.TestCase):
         for operation, schema in cp2_gemini_adapter.OPERATION_SCHEMAS.items():
             with self.subTest(operation=operation):
                 self.assertEqual("PASS", cp2_gemini_adapter.validate_schema_parity(operation, schema)["status"])
+                self.assertFalse(schema["additionalProperties"])
         weakened = deepcopy(cp2_gemini_adapter.OPERATION_SCHEMAS["semantic"])
         weakened["properties"]["translations"]["items"]["required"].remove("semanticVi")
         self.assertEqual("FAIL", cp2_gemini_adapter.validate_schema_parity("semantic", weakened)["status"])
         nullable = deepcopy(cp2_gemini_adapter.OPERATION_SCHEMAS["semantic"])
         nullable["properties"]["translations"]["items"]["properties"]["semanticVi"]["nullable"] = True
         self.assertEqual("FAIL", cp2_gemini_adapter.validate_schema_parity("semantic", nullable)["status"])
+        extra_fields = deepcopy(cp2_gemini_adapter.OPERATION_SCHEMAS["semantic"])
+        extra_fields["properties"]["translations"]["items"]["additionalProperties"] = True
+        self.assertEqual("FAIL", cp2_gemini_adapter.validate_schema_parity("semantic", extra_fields)["status"])
 
     @unittest.skipIf(cp2_gemini_adapter is None, "CP2 Gemini adapter is not implemented")
     def test_final_transport_payload_keeps_nested_schema_requirements(self) -> None:
@@ -202,6 +206,17 @@ class CP2GeminiAdapterTests(unittest.TestCase):
             },
         }
         self.assertFalse(multimodal_vi_harness._state_is_compatible(state, contract, records))
+
+    @unittest.skipIf(cp2_gemini_adapter is None, "CP2 Gemini adapter is not implemented")
+    def test_duplicate_or_whitespace_input_identity_is_rejected_before_transport(self) -> None:
+        bridge, calls = self._adapter([_scene()])
+        for records in (
+            [{"utteranceId": "u1", "kind": "dialogue"}, {"utteranceId": "u1", "kind": "dialogue"}],
+            [{"utteranceId": "  ", "kind": "dialogue"}],
+        ):
+            with self.subTest(records=records), self.assertRaises(ValueError):
+                bridge({"mode": "scene", "utterances": records})
+        self.assertEqual([], calls)
 
 
 if __name__ == "__main__":
