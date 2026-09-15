@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from av_analyzer import persist_diagnostics, validate_av_analysis
-from source_reconciler import reconcile_source
+from source_reconciler import IDENTITY_VERSION, reconcile_source
 from utterance_builder import build_utterances
 
 
@@ -30,7 +30,7 @@ def _metrics(reconstructed: Mapping[str, object]) -> dict[str, int]:
 def _ordered_records(reconstructed: Mapping[str, object]) -> list[dict[str, object]]:
     records = [dict(item, type="UNRESOLVED_DIALOGUE" if "UNRESOLVED" in item.get("flags", []) else "DIALOGUE") for item in reconstructed["dialogue"]]
     records.extend(dict(item) for item in reconstructed["visual_only"])
-    return sorted(records, key=lambda item: (int(item["startMs"]), int(item["endMs"]), str(item.get("type", ""))))
+    return sorted(records, key=lambda item: (int(item["startMs"]), int(item["endMs"]), str(item.get("type", "")), str(item.get("utteranceId", ""))))
 
 
 def _cue_text(cues: Sequence[Mapping[str, object]], positions: Sequence[object], key: str) -> str:
@@ -76,10 +76,21 @@ def run_fixture(fixture: Mapping[str, object], output_dir: Path) -> list[Path]:
     cues = fixture["cues"]
     reconstructed = reconcile_source(cues, av_analysis, fixture.get("unresolved"))
     reconstructed["dialogue"] = build_utterances(reconstructed["dialogue"], cues)
+    reconstructed["unresolved"] = [item for item in reconstructed["dialogue"] if "UNRESOLVED" in item.get("flags", [])]
     reconstructed["metrics"] = _metrics(reconstructed)
     records = _ordered_records(reconstructed)
     persist_diagnostics(output_dir / "av_analysis.json", av_analysis)
-    source_document = {**reconstructed, "records": records}
+    source_document = {
+        "schemaVersion": 2,
+        "identityVersion": IDENTITY_VERSION,
+        "windowStartMs": int(av_analysis["windowStartMs"]),
+        "windowEndMs": int(av_analysis["windowEndMs"]),
+        "scene": dict(av_analysis["scene"]),
+        "utterances": [dict(item) for item in reconstructed["dialogue"]],
+        "visualOnly": [dict(item) for item in reconstructed["visual_only"]],
+        **reconstructed,
+        "records": records,
+    }
     source_path = _write_json(output_dir / "source_reconstruction.json", source_document)
     ab = {
         "fixture_version": fixture["fixture_version"],

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import copy
 import json
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ av_analyzer = _optional_module("av_analyzer")
 source_reconciler = _optional_module("source_reconciler")
 utterance_builder = _optional_module("utterance_builder")
 source_harness = _optional_module("multimodal_source_harness")
+vi_harness = _optional_module("multimodal_vi_harness")
 
 FIXTURE = Path(__file__).parent / "fixtures" / "multimodal_25s" / "source_fixture.json"
 PERSISTED_FIXTURE = Path(__file__).parent / "fixtures" / "multimodal_25s" / "persisted_runtime.json"
@@ -90,6 +92,10 @@ class MultimodalSourceContractTests(unittest.TestCase):
         utterances = utterance_builder.build_utterances(result["dialogue"], fixture["cues"])
         self.assertEqual(["cue-1", "cue-2"], utterances[1]["cue_ids"])
         self.assertEqual(["cue-22", "cue-23"], utterances[-1]["cue_ids"])
+        self.assertTrue(all(item.get("utteranceId") for item in result["dialogue"]))
+        self.assertEqual("新学期", result["dialogue"][0]["spokenZh"])
+        self.assertEqual("新学期", result["dialogue"][0]["subtitleZh"])
+        self.assertEqual("speaker-1", result["dialogue"][0]["speakerRef"])
 
     @unittest.skipIf(av_analyzer is None, "CP1 analyzer is not implemented")
     def test_av_analysis_rejects_invalid_structured_schema_and_bounds_diagnostics(self) -> None:
@@ -221,6 +227,161 @@ class MultimodalSourceContractTests(unittest.TestCase):
                 {"av_analysis.json", "source_reconstruction.json", "multimodal_source_ab.json", "multimodal_source_ab.md"},
                 {path.name for path in Path(directory).iterdir()},
             )
+
+    @unittest.skipIf(source_reconciler is None, "CP1 reconciliation is not implemented")
+    def test_canonical_identity_is_owned_after_reconciliation_and_ignores_text(self) -> None:
+        records = [
+            {"startMs": 1_000, "endMs": 2_000, "resolvedZh": "好", "spokenZh": "好", "subtitleZh": "好", "positions": []},
+            {"startMs": 3_000, "endMs": 4_000, "resolvedZh": "原文", "spokenZh": "原文", "subtitleZh": "原文", "positions": []},
+        ]
+        assigned = source_reconciler.assign_canonical_utterance_ids(records)
+        changed = copy.deepcopy(records)
+        changed[0]["resolvedZh"] = "改写后的源文"
+        changed[0]["spokenZh"] = "改写后的源文"
+        changed[0]["subtitleZh"] = "改写后的源文"
+        reassigned = source_reconciler.assign_canonical_utterance_ids(changed)
+        self.assertEqual(
+            ["utt_v1_d_00001000_00002000", "utt_v1_d_00003000_00004000"],
+            [item["utteranceId"] for item in assigned],
+        )
+        self.assertEqual(
+            [item["utteranceId"] for item in assigned],
+            [item["utteranceId"] for item in reassigned],
+        )
+
+    @unittest.skipIf(source_reconciler is None, "CP1 reconciliation is not implemented")
+    def test_identity_is_stable_across_key_order_and_input_reordering(self) -> None:
+        first = [
+            {"startMs": 2_000, "endMs": 3_000, "resolvedZh": "好", "positions": []},
+            {"startMs": 1_000, "endMs": 1_500, "resolvedZh": "好", "positions": []},
+        ]
+        second = [
+            {"positions": [], "resolvedZh": "好", "endMs": 1_500, "startMs": 1_000},
+            {"positions": [], "resolvedZh": "好", "endMs": 3_000, "startMs": 2_000},
+        ]
+        first_by_span = {(item["startMs"], item["endMs"]): item["utteranceId"] for item in source_reconciler.assign_canonical_utterance_ids(first)}
+        second_by_span = {(item["startMs"], item["endMs"]): item["utteranceId"] for item in source_reconciler.assign_canonical_utterance_ids(second)}
+        self.assertEqual(first_by_span, second_by_span)
+
+    @unittest.skipIf(source_reconciler is None, "CP1 reconciliation is not implemented")
+    def test_same_text_at_different_times_has_distinct_identity(self) -> None:
+        assigned = source_reconciler.assign_canonical_utterance_ids([
+            {"startMs": 1_000, "endMs": 2_000, "resolvedZh": "好", "positions": []},
+            {"startMs": 4_000, "endMs": 5_000, "resolvedZh": "好", "positions": []},
+        ])
+        self.assertEqual(2, len({item["utteranceId"] for item in assigned}))
+
+    @unittest.skipIf(source_reconciler is None, "CP1 reconciliation is not implemented")
+    def test_same_time_records_use_stable_cue_or_position_anchors(self) -> None:
+        cue_records = [
+            {"startMs": 1_000, "endMs": 2_000, "resolvedZh": "好", "cue_ids": ["cue-b"]},
+            {"startMs": 1_000, "endMs": 2_000, "resolvedZh": "不同内容", "cue_ids": ["cue-a"]},
+        ]
+        reversed_ids = {
+            tuple(item["cue_ids"]): item["utteranceId"]
+            for item in source_reconciler.assign_canonical_utterance_ids(list(reversed(cue_records)))
+        }
+        original_ids = {
+            tuple(item["cue_ids"]): item["utteranceId"]
+            for item in source_reconciler.assign_canonical_utterance_ids(cue_records)
+        }
+        self.assertEqual(original_ids, reversed_ids)
+        self.assertEqual(2, len(set(original_ids.values())))
+
+        position_records = [
+            {"startMs": 1_000, "endMs": 2_000, "resolvedZh": "甲", "positions": [11]},
+            {"startMs": 1_000, "endMs": 2_000, "resolvedZh": "乙", "positions": [12]},
+        ]
+        position_ids = source_reconciler.assign_canonical_utterance_ids(position_records)
+        self.assertEqual(2, len({item["utteranceId"] for item in position_ids}))
+
+    @unittest.skipIf(source_reconciler is None, "CP1 reconciliation is not implemented")
+    def test_same_time_without_stable_anchor_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "IDENTITY_AMBIGUOUS"):
+            source_reconciler.assign_canonical_utterance_ids([
+                {"startMs": 1_000, "endMs": 2_000, "spokenZh": "好"},
+                {"startMs": 1_000, "endMs": 2_000, "spokenZh": "不同内容"},
+            ])
+
+    @unittest.skipIf(source_harness is None or vi_harness is None, "CP1/CP2 bridge is not implemented")
+    def test_persisted_canonical_artifact_feeds_cp2_without_identity_synthesis(self) -> None:
+        fixture = {
+            "fixture_version": 2,
+            "cues": [],
+            "unresolved": None,
+            "av_analysis": _canonical_av(
+                utterances=[_av_utterance(500, 1500, "好", "好")],
+                visual_only=[_av_visual(0, 500, "字幕")],
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            source_harness.run_fixture(fixture, Path(directory))
+            document = json.loads((Path(directory) / "source_reconstruction.json").read_text(encoding="utf-8"))
+            records = vi_harness.records_from_source_reconstruction(document)
+        self.assertEqual(2, document["schemaVersion"])
+        self.assertEqual(1, document["identityVersion"])
+        self.assertEqual(1, len(document["utterances"]))
+        self.assertEqual("utt_v1_d_00000500_00001500", document["utterances"][0]["utteranceId"])
+        self.assertEqual(500, records[0]["start_ms"])
+        self.assertEqual(1500, records[0]["end_ms"])
+        self.assertEqual("好", document["utterances"][0]["spokenZh"])
+        self.assertEqual("好", document["utterances"][0]["subtitleZh"])
+        self.assertEqual([], document["utterances"][0]["positions"])
+        self.assertNotIn("utteranceId", document["visualOnly"][0])
+        self.assertEqual(document["utterances"][0]["utteranceId"], records[0]["utteranceId"])
+
+    @unittest.skipIf(vi_harness is None, "CP2 bridge is not implemented")
+    def test_cp2_preserves_identity_and_rejects_missing_identity_or_timing(self) -> None:
+        canonical = {
+            "schemaVersion": 2,
+            "identityVersion": 1,
+            "scene": {"summary": "scene", "tone": "comic", "register": "spoken"},
+            "utterances": [{
+                "utteranceId": "stable-source-id",
+                "startMs": 100,
+                "endMs": 200,
+                "resolvedZh": "改过的文字",
+                "spokenZh": "改过的文字",
+                "subtitleZh": "改过的文字",
+                "positions": [],
+                "flags": ["AV_CONFLICT", "UNRESOLVED"],
+                "confidence": "LOW",
+            }],
+            "visualOnly": [],
+        }
+        record = vi_harness.records_from_source_reconstruction(canonical)[0]
+        self.assertEqual("stable-source-id", record["utteranceId"])
+        self.assertEqual(["AV_CONFLICT", "UNRESOLVED"], record["source_flags"])
+        self.assertEqual("low", record["source_confidence"])
+        with self.assertRaisesRegex(ValueError, "identity"):
+            vi_harness.records_from_source_reconstruction({**canonical, "utterances": [{"startMs": 1, "endMs": 2}]})
+        with self.assertRaisesRegex(ValueError, "timing"):
+            vi_harness.records_from_source_reconstruction({**canonical, "utterances": [{"utteranceId": "id"}]})
+
+    @unittest.skipIf(vi_harness is None, "CP2 bridge is not implemented")
+    def test_legacy_records_without_canonical_utterances_fail_without_synthesis(self) -> None:
+        with self.assertRaisesRegex(ValueError, "utterance"):
+            vi_harness.records_from_source_reconstruction({
+                "records": [{"startMs": 1, "endMs": 2, "resolvedZh": "好"}],
+            })
+
+    @unittest.skipIf(source_harness is None, "CP1 persistence is not implemented")
+    def test_persisted_scene_and_flags_are_canonical_and_resume_is_deterministic(self) -> None:
+        fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as directory:
+            source_harness.run_fixture(fixture, Path(directory))
+            path = Path(directory) / "source_reconstruction.json"
+            first = json.loads(path.read_text(encoding="utf-8"))
+            second = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(first["scene"], fixture["av_analysis"]["scene"])
+        self.assertEqual(
+            [item["utteranceId"] for item in first["utterances"]],
+            [item["utteranceId"] for item in second["utterances"]],
+        )
+        self.assertEqual(
+            [item["flags"] for item in first["utterances"]],
+            [item["flags"] for item in second["utterances"]],
+        )
 
 
 if __name__ == "__main__":

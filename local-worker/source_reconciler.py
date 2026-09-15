@@ -1,6 +1,8 @@
 """Evidence-first reconciliation of canonical multimodal source evidence."""
 from __future__ import annotations
 
+import hashlib
+import json
 import string
 import unicodedata
 from typing import Mapping, Sequence
@@ -10,6 +12,15 @@ from av_analyzer import validate_av_analysis
 
 _CONFIDENCE_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
 _PUNCTUATION = set(string.punctuation) | set("，。！？、；：‘’“”【】（）《》…—·")
+IDENTITY_VERSION = 1
+
+
+class CanonicalIdentityError(ValueError):
+    """The reconciled source cannot receive an unambiguous stable identity."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
 
 
 def _overlaps(left: Mapping[str, object], right: Mapping[str, object]) -> bool:
@@ -126,6 +137,13 @@ def _join_values(values: Sequence[object]) -> str:
     return "; ".join(unique)
 
 
+def _shared_value(items: Sequence[Mapping[str, object]], key: str) -> object | None:
+    values = [item.get(key) for item in items if item.get(key) is not None]
+    if not values or any(value != values[0] for value in values[1:]):
+        return None
+    return values[0]
+
+
 def _conflict(items: Sequence[Mapping[str, object]]) -> bool:
     return any(_overlaps(left, right) and not _texts_agree(left, right) for index, left in enumerate(items) for right in items[index + 1:])
 
@@ -196,6 +214,11 @@ def _dialogue_record(group: Mapping[str, object], linked: Sequence[Mapping[str, 
     return {
         "startMs": int(group["start_ms"]),
         "endMs": int(group["end_ms"]),
+        "spokenZh": spoken or "",
+        "subtitleZh": subtitle or "",
+        "speakerRef": _shared_value(items, "speakerRef"),
+        "intent": _shared_value(items, "intent"),
+        "emotion": _shared_value(items, "emotion"),
         "resolvedZh": chosen,
         "confidence": strongest,
         "positions": positions,
@@ -205,6 +228,58 @@ def _dialogue_record(group: Mapping[str, object], linked: Sequence[Mapping[str, 
         "cue_ids": [str(cue["cue_id"]) for cue in linked],
         "alternatives": alternatives[:2] if conflict else [],
     }
+
+
+def _stable_identity_anchor(record: Mapping[str, object]) -> dict[str, object] | None:
+    anchor: dict[str, object] = {}
+    for key in ("cue_ids", "cueIds"):
+        values = record.get(key)
+        if isinstance(values, (list, tuple)) and values:
+            anchor["cueIds"] = sorted(str(value) for value in values)
+            break
+    if "cueIds" not in anchor:
+        values = record.get("positions", record.get("cuePositions"))
+        if isinstance(values, (list, tuple)) and values:
+            anchor["positions"] = sorted(str(value) for value in values)
+    if not anchor:
+        for key in ("sourceAnchor", "source_anchor", "speakerRef"):
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                anchor[key] = value.strip()
+                break
+    return anchor or None
+
+
+def _identity_base(record: Mapping[str, object]) -> str:
+    record_type = str(record.get("type") or "DIALOGUE").strip().lower()
+    return f"utt_v{IDENTITY_VERSION}_{record_type[:1] or 'd'}_{int(record['startMs']):08d}_{int(record['endMs']):08d}"
+
+
+def assign_canonical_utterance_ids(records: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    """Assign stable technical IDs after source timing has been reconciled."""
+    normalized = [dict(record) for record in records]
+    groups: dict[tuple[int, int], list[dict[str, object]]] = {}
+    for record in normalized:
+        start, end = record.get("startMs"), record.get("endMs")
+        if isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start:
+            raise CanonicalIdentityError("CANONICAL_TIMING_INVALID")
+        groups.setdefault((start, end), []).append(record)
+
+    for same_time in groups.values():
+        base = _identity_base(same_time[0])
+        if len(same_time) == 1:
+            same_time[0]["utteranceId"] = base
+            continue
+        anchors = [_stable_identity_anchor(record) for record in same_time]
+        encoded = [json.dumps(anchor, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if anchor is not None else None for anchor in anchors]
+        if any(value is None for value in encoded) or len(set(encoded)) != len(encoded):
+            raise CanonicalIdentityError("IDENTITY_AMBIGUOUS")
+        identifiers = [base + "_a" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:12] for value in encoded if value is not None]
+        if len(set(identifiers)) != len(identifiers):
+            raise CanonicalIdentityError("IDENTITY_AMBIGUOUS")
+        for record, identifier in zip(same_time, identifiers):
+            record["utteranceId"] = identifier
+    return normalized
 
 
 def _visual_records(values: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
@@ -249,6 +324,7 @@ def reconcile_source(
                 item["confidence"] = "LOW"
                 break
     dialogue.sort(key=lambda item: (int(item["startMs"]), int(item["endMs"])))
+    dialogue = assign_canonical_utterance_ids(dialogue)
     unresolved_items = [item for item in dialogue if "UNRESOLVED" in item["flags"]]
     visual_only = _visual_records(av_analysis["visualOnly"])
     return {"dialogue": dialogue, "visual_only": visual_only, "unresolved": unresolved_items}

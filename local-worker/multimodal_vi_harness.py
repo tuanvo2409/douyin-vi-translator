@@ -40,27 +40,41 @@ def records_from_source_reconstruction(source: Mapping[str, object], old_benchma
     """Convert a CP1 reconstruction document to lossless CP2 input rows."""
     utterances = source.get("utterances")
     if not isinstance(utterances, list):
-        raise ValueError("source reconstruction utterances are invalid")
+        raise ValueError("canonical utterance list is required")
+    if "schemaVersion" in source and source.get("schemaVersion") != 2:
+        raise ValueError("unsupported canonical source schema version")
+    if "identityVersion" in source and source.get("identityVersion") != 1:
+        raise ValueError("unsupported canonical identity version")
     segments = old_benchmark.get("segments", []) if isinstance(old_benchmark, Mapping) else []
     if not isinstance(segments, list):
         raise ValueError("old benchmark segments are invalid")
     result, seen = [], set()
     for item in utterances:
-        if not isinstance(item, Mapping) or "utteranceId" not in item or not isinstance(item.get("startMs"), int) or not isinstance(item.get("endMs"), int):
-            raise ValueError("source reconstruction utterance is invalid")
+        if not isinstance(item, Mapping) or "utteranceId" not in item or item.get("utteranceId") is None or not str(item.get("utteranceId")).strip():
+            raise ValueError("canonical utterance identity is required")
+        if not isinstance(item.get("startMs"), int) or isinstance(item.get("startMs"), bool) or not isinstance(item.get("endMs"), int) or isinstance(item.get("endMs"), bool):
+            raise ValueError("canonical utterance timing is required")
         identifier = str(item["utteranceId"])
         if not identifier or identifier in seen or item["endMs"] < item["startMs"]:
-            raise ValueError("source reconstruction identity is invalid")
+            raise ValueError("canonical utterance identity is invalid")
         seen.add(identifier)
         visual = item.get("visualOnly") is True
-        unresolved = not visual and (str(item.get("currentSourceStatus", "")).upper() == "UNRESOLVED" or str(item.get("confidence", "")).lower() in {"low", "unresolved"})
+        flags = item.get("flags", item.get("source_flags", []))
+        if not isinstance(flags, list):
+            raise ValueError("canonical source flags are invalid")
+        unresolved = not visual and ("UNRESOLVED" in {str(flag).upper() for flag in flags} or str(item.get("currentSourceStatus", "")).upper() == "UNRESOLVED" or str(item.get("confidence", "")).lower() in {"low", "unresolved"})
         kind = "VISUAL_ONLY" if visual else "UNRESOLVED_DIALOGUE" if unresolved else "RESOLVED_DIALOGUE"
         old_vi = ""
         if not visual:
             overlaps = [segment for segment in segments if isinstance(segment, Mapping) and isinstance(segment.get("startMs"), int) and isinstance(segment.get("endMs"), int) and min(item["endMs"], segment["endMs"]) > max(item["startMs"], segment["startMs"])]
             if overlaps:
                 old_vi = str(max(overlaps, key=lambda segment: min(item["endMs"], segment["endMs"]) - max(item["startMs"], segment["startMs"])).get("currentVi", ""))
-        result.append({"utteranceId": identifier, "start_ms": item["startMs"], "end_ms": item["endMs"], "resolvedZh": str(item.get("resolvedZh", "")), "oldVi": old_vi, "source_confidence": str(item.get("confidence", "")).lower(), "positions": item.get("cuePositions", item.get("positions", [])), "evidence": item.get("evidence", {}), "source_flags": item.get("flags", item.get("source_flags", [])), "kind": "visual_only" if visual else "dialogue", "type": "DIALOGUE" if kind == "RESOLVED_DIALOGUE" else kind, "classification": kind})
+        positions = item.get("positions", item.get("cuePositions", []))
+        if positions is None:
+            positions = []
+        if not isinstance(positions, list):
+            raise ValueError("canonical source positions are invalid")
+        result.append({"utteranceId": identifier, "start_ms": item["startMs"], "end_ms": item["endMs"], "resolvedZh": str(item.get("resolvedZh", "")), "spokenZh": str(item.get("spokenZh", "")), "subtitleZh": str(item.get("subtitleZh", "")), "oldVi": old_vi, "source_confidence": str(item.get("confidence", "")).lower(), "positions": positions, "evidence": item.get("evidence", {}), "source_flags": list(flags), "kind": "visual_only" if visual else "dialogue", "type": "DIALOGUE" if kind == "RESOLVED_DIALOGUE" else kind, "classification": kind})
     return result
 
 
