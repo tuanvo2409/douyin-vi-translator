@@ -33,6 +33,9 @@ class SubtitleLayoutPolicy:
     line_spacing_px: int = 4
     bottom_safe_margin_px: int = 48
     minimum_display_duration_ms: int = 350
+    source_anchor_min_ratio: float = 0.55
+    source_anchor_max_ratio: float = 0.90
+    source_anchor_max_spread_ratio: float = 0.25
 
     def __post_init__(self) -> None:
         if self.frame_width <= 0 or self.frame_height <= 0:
@@ -47,6 +50,10 @@ class SubtitleLayoutPolicy:
             raise SubtitleLayoutError("horizontal safe margin ratio is invalid")
         if self.max_box_width_ratio > 1 - 2 * self.horizontal_safe_margin_ratio:
             raise SubtitleLayoutError("box width exceeds horizontal safe area")
+        if not 0 <= self.source_anchor_min_ratio <= self.source_anchor_max_ratio <= 1:
+            raise SubtitleLayoutError("source anchor vertical range is invalid")
+        if self.source_anchor_max_spread_ratio < 0:
+            raise SubtitleLayoutError("source anchor spread cannot be negative")
         if min(
             self.padding_x_px,
             self.padding_top_px,
@@ -64,12 +71,15 @@ def layout_subtitles(
     cues: Sequence[Mapping[str, object]],
     *,
     policy: SubtitleLayoutPolicy | None = None,
+    placement_evidence: Sequence[Mapping[str, object]] | None = None,
+    source_to_output: object | None = None,
 ) -> dict[str, object]:
     """Lay out display-only cues without mutating timing or source data."""
 
     policy = policy or SubtitleLayoutPolicy()
     display_cues: list[dict[str, object]] = []
     split_ids: set[str] = set()
+    placements: dict[str, dict[str, object]] = {}
     for raw in cues:
         if not isinstance(raw, Mapping):
             raise SubtitleLayoutError("subtitle cue must be an object")
@@ -84,7 +94,19 @@ def layout_subtitles(
             split_ids.add(identifier)
         layouts = [_best_layout(chunk, policy) for chunk in chunks]
         intervals = _weighted_intervals(start, end, layouts, policy)
+        placement = placements.get(identifier)
+        if placement is None:
+            placement = _source_placement(
+                identifier,
+                start,
+                end,
+                placement_evidence,
+                source_to_output,
+                policy,
+            )
+            placements[identifier] = placement
         for index, (layout, (output_start, output_end)) in enumerate(zip(layouts, intervals), start=1):
+            positioned = _position_layout(layout, placement, policy)
             display_cues.append({
                 "utteranceId": identifier,
                 "voiceEventId": str(raw.get("voiceEventId") or identifier),
@@ -97,17 +119,27 @@ def layout_subtitles(
                 "lineHeightPx": layout["lineHeightPx"],
                 "boxWidthPx": layout["boxWidthPx"],
                 "boxHeightPx": layout["boxHeightPx"],
-                "boxLeftPx": layout["boxLeftPx"],
-                "boxTopPx": layout["boxTopPx"],
-                "boxRightPx": layout["boxRightPx"],
-                "boxBottomPx": layout["boxBottomPx"],
+                "boxLeftPx": positioned["boxLeftPx"],
+                "boxTopPx": positioned["boxTopPx"],
+                "boxRightPx": positioned["boxRightPx"],
+                "boxBottomPx": positioned["boxBottomPx"],
+                "anchorSource": placement["anchorSource"],
+                "sourceDialogueTrackId": placement["sourceDialogueTrackId"],
+                "sourceAnchorXPx": placement["sourceAnchorXPx"],
+                "sourceAnchorYPx": placement["sourceAnchorYPx"],
+                "finalAnchorXPx": positioned["finalAnchorXPx"],
+                "finalAnchorYPx": positioned["finalAnchorYPx"],
+                "fallbackUsed": placement["fallbackUsed"],
+                "fallbackReason": placement["fallbackReason"],
                 "outputStartMs": output_start,
                 "outputEndMs": output_end,
                 "splitFromLongCue": len(chunks) > 1,
             })
     return {
         "schemaVersion": 1,
-        "artifact": "subtitle_layout_v5",
+        "artifact": "subtitle_layout_v6_source_aware"
+        if placement_evidence is not None or source_to_output is not None
+        else "subtitle_layout_v5",
         "policy": _policy_document(policy),
         "displayCues": display_cues,
         "maximumLineCount": max((int(cue["lineCount"]) for cue in display_cues), default=0),
@@ -116,6 +148,17 @@ def layout_subtitles(
         "maximumBoxWidthRatio": max(
             (int(cue["boxWidthPx"]) / policy.frame_width for cue in display_cues),
             default=0.0,
+        ),
+        "sourceAnchoredCueCount": sum(
+            1 for cue in display_cues if cue["anchorSource"] == "DIALOGUE_SUBTITLE"
+        ),
+        "fallbackCueCount": sum(1 for cue in display_cues if cue["fallbackUsed"]),
+        "minimumBoxTopPx": min((int(cue["boxTopPx"]) for cue in display_cues), default=0),
+        "maximumBoxBottomPx": max((int(cue["boxBottomPx"]) for cue in display_cues), default=0),
+        "verticalClampCount": sum(
+            1 for cue in display_cues
+            if cue["anchorSource"] == "DIALOGUE_SUBTITLE"
+            and cue["sourceAnchorYPx"] != cue["finalAnchorYPx"]
         ),
     }
 
@@ -144,8 +187,8 @@ def render_ass_document(
         end = _ass_time(_integer(cue, "outputEndMs"))
         box_width = _integer(cue, "boxWidthPx")
         box_height = _integer(cue, "boxHeightPx")
-        center_x = policy.frame_width // 2
-        center_y = policy.frame_height - policy.bottom_safe_margin_px - box_height // 2
+        center_x = _render_anchor_x(cue, policy, box_width)
+        center_y = _render_anchor(cue, policy, box_height)
         box_path = f"m 0 0 l {box_width} 0 l {box_width} {box_height} l 0 {box_height}"
         lines.append(
             f"Dialogue: 0,{start},{end},SubtitleBox,,0,0,0,,{{\\an5\\pos({center_x},{center_y})\\p1}}{box_path}{{\\p0}}"
@@ -164,6 +207,8 @@ def write_ass_subtitles(
     width: int = 720,
     height: int = 1280,
     policy: SubtitleLayoutPolicy | None = None,
+    placement_evidence: Sequence[Mapping[str, object]] | None = None,
+    source_to_output: object | None = None,
 ) -> dict[str, object]:
     """Write a measured ASS overlay and return its diagnostics document."""
 
@@ -171,10 +216,208 @@ def write_ass_subtitles(
         policy = SubtitleLayoutPolicy(frame_width=width, frame_height=height)
     elif policy.frame_width != width or policy.frame_height != height:
         raise SubtitleLayoutError("policy frame dimensions do not match ASS dimensions")
-    result = layout_subtitles(cues, policy=policy)
+    result = layout_subtitles(
+        cues,
+        policy=policy,
+        placement_evidence=placement_evidence,
+        source_to_output=source_to_output,
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render_ass_document(result["displayCues"], policy), encoding="utf-8")
     return result
+
+
+_DIALOGUE_CATEGORIES = frozenset({"DIALOGUE_SUBTITLE", "CHINESE_DIALOGUE_SUBTITLE"})
+
+
+def _source_placement(
+    identifier: str,
+    output_start: int,
+    output_end: int,
+    evidence: Sequence[Mapping[str, object]] | None,
+    source_to_output: object | None,
+    policy: SubtitleLayoutPolicy,
+) -> dict[str, object]:
+    del identifier
+    fallback = {
+        "anchorSource": "V5_FALLBACK_BOTTOM",
+        "sourceDialogueTrackId": None,
+        "sourceAnchorXPx": None,
+        "sourceAnchorYPx": None,
+        "fallbackUsed": True,
+        "fallbackReason": "NO_SOURCE_DIALOGUE_EVIDENCE",
+    }
+    if evidence is None:
+        return fallback
+    if source_to_output is None:
+        fallback["fallbackReason"] = "SOURCE_TIMELINE_MISSING"
+        return fallback
+
+    candidates: list[dict[str, object]] = []
+    malformed = False
+    for raw in evidence:
+        if not isinstance(raw, Mapping):
+            malformed = True
+            continue
+        category = str(raw.get("category") or "").strip().upper()
+        if category not in _DIALOGUE_CATEGORIES:
+            continue
+        confidence = str(raw.get("confidence") or "").strip().upper()
+        if confidence in {"LOW", "UNKNOWN", "UNAVAILABLE"}:
+            continue
+        interval = _evidence_interval(raw)
+        bbox = _evidence_bbox(raw, policy)
+        if interval is None or bbox is None:
+            malformed = True
+            continue
+        try:
+            mapped_start, mapped_end = _map_source_interval(source_to_output, *interval)
+        except (SubtitleLayoutError, TypeError, ValueError, AttributeError):
+            malformed = True
+            continue
+        overlap = max(0, min(mapped_end, output_end) - max(mapped_start, output_start))
+        if overlap <= 0:
+            continue
+        candidates.append({
+            "trackId": _track_id(raw),
+            "sourceAnchorX": (bbox[0] + bbox[2]) / 2,
+            "sourceAnchorY": (bbox[1] + bbox[3]) / 2,
+            "overlap": overlap,
+        })
+    if not candidates:
+        fallback["fallbackReason"] = (
+            "MALFORMED_OR_UNSAFE_DIALOGUE_EVIDENCE" if malformed
+            else "NO_OVERLAPPING_DIALOGUE_EVIDENCE"
+        )
+        return fallback
+
+    x_values = [float(candidate["sourceAnchorX"]) for candidate in candidates]
+    y_values = [float(candidate["sourceAnchorY"]) for candidate in candidates]
+    if max(y_values) - min(y_values) > policy.frame_height * policy.source_anchor_max_spread_ratio:
+        fallback["fallbackReason"] = "AMBIGUOUS_DIALOGUE_ANCHOR"
+        return fallback
+    source_anchor = _median(y_values)
+    source_anchor_x = _median(x_values)
+    if not policy.frame_height * policy.source_anchor_min_ratio <= source_anchor <= policy.frame_height * policy.source_anchor_max_ratio:
+        fallback["fallbackReason"] = "UNSAFE_DIALOGUE_ANCHOR"
+        return fallback
+    chosen = min(
+        candidates,
+        key=lambda candidate: (
+            abs(float(candidate["sourceAnchorY"]) - source_anchor),
+            -int(candidate["overlap"]),
+            str(candidate["trackId"] or ""),
+        ),
+    )
+    return {
+        "anchorSource": "DIALOGUE_SUBTITLE",
+        "sourceDialogueTrackId": chosen["trackId"],
+        "sourceAnchorXPx": int(round(source_anchor_x)),
+        "sourceAnchorYPx": int(round(source_anchor)),
+        "fallbackUsed": False,
+        "fallbackReason": None,
+    }
+
+
+def _position_layout(
+    layout: Mapping[str, object],
+    placement: Mapping[str, object],
+    policy: SubtitleLayoutPolicy,
+) -> dict[str, object]:
+    positioned = dict(layout)
+    box_width = int(layout["boxWidthPx"])
+    box_height = int(layout["boxHeightPx"])
+    fallback_anchor_x = policy.frame_width // 2
+    fallback_anchor = policy.frame_height - policy.bottom_safe_margin_px - box_height // 2
+    requested_x = placement.get("sourceAnchorXPx")
+    requested = placement.get("sourceAnchorYPx")
+    if placement.get("anchorSource") == "DIALOGUE_SUBTITLE" and isinstance(requested_x, int):
+        anchor_x = requested_x
+    else:
+        anchor_x = fallback_anchor_x
+    if placement.get("anchorSource") == "DIALOGUE_SUBTITLE" and isinstance(requested, int):
+        anchor = requested
+    else:
+        anchor = fallback_anchor
+    minimum = box_height // 2
+    maximum = policy.frame_height - policy.bottom_safe_margin_px - box_height // 2
+    final_anchor = max(minimum, min(anchor, maximum))
+    horizontal_margin = policy.frame_width * policy.horizontal_safe_margin_ratio
+    minimum_x = math.ceil(horizontal_margin + box_width / 2)
+    maximum_x = math.floor(policy.frame_width - horizontal_margin - box_width / 2)
+    final_anchor_x = max(minimum_x, min(anchor_x, maximum_x))
+    positioned.update({
+        "boxLeftPx": final_anchor_x - box_width // 2,
+        "boxRightPx": final_anchor_x + box_width // 2,
+        "boxTopPx": final_anchor - box_height // 2,
+        "boxBottomPx": final_anchor + box_height // 2,
+        "finalAnchorXPx": final_anchor_x,
+        "finalAnchorYPx": final_anchor,
+    })
+    return positioned
+
+
+def _render_anchor(cue: Mapping[str, object], policy: SubtitleLayoutPolicy, box_height: int) -> int:
+    value = cue.get("finalAnchorYPx")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return policy.frame_height - policy.bottom_safe_margin_px - box_height // 2
+
+
+def _render_anchor_x(cue: Mapping[str, object], policy: SubtitleLayoutPolicy, box_width: int) -> int:
+    value = cue.get("finalAnchorXPx")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return policy.frame_width // 2
+
+
+def _evidence_interval(row: Mapping[str, object]) -> tuple[int, int] | None:
+    start = row.get("startMs", row.get("sourceStartMs"))
+    end = row.get("endMs", row.get("sourceEndMs"))
+    if (
+        isinstance(start, bool) or isinstance(end, bool)
+        or not isinstance(start, int) or not isinstance(end, int)
+        or end <= start or start < 0
+    ):
+        return None
+    return start, end
+
+
+def _evidence_bbox(row: Mapping[str, object], policy: SubtitleLayoutPolicy) -> tuple[float, float, float, float] | None:
+    value = row.get("bbox", row.get("bboxPx"))
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in value):
+        return None
+    left, top, right, bottom = (float(item) for item in value)
+    if not 0 <= left < right <= policy.frame_width or not 0 <= top < bottom <= policy.frame_height:
+        return None
+    return left, top, right, bottom
+
+
+def _track_id(row: Mapping[str, object]) -> str | None:
+    value = row.get("trackId", row.get("sourceDialogueTrackId"))
+    if value is None or not str(value).strip():
+        return None
+    return str(value).strip()
+
+
+def _map_source_interval(source_to_output: object, start: int, end: int) -> tuple[int, int]:
+    mapper = getattr(source_to_output, "map_interval", None)
+    if not callable(mapper):
+        raise SubtitleLayoutError("source timeline must provide the accepted TimelineMap API")
+    mapped = mapper(start, end)
+    if not isinstance(mapped, tuple) or len(mapped) != 2:
+        raise SubtitleLayoutError("source timeline returned an invalid interval")
+    return int(mapped[0]), int(mapped[1])
+
+
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
 
 
 def _display_chunks(text: str, policy: SubtitleLayoutPolicy) -> list[str]:
@@ -306,6 +549,9 @@ def _policy_document(policy: SubtitleLayoutPolicy) -> dict[str, object]:
         "shadowPx": policy.shadow_px,
         "lineSpacingPx": policy.line_spacing_px,
         "bottomSafeMarginPx": policy.bottom_safe_margin_px,
+        "sourceAnchorMinRatio": policy.source_anchor_min_ratio,
+        "sourceAnchorMaxRatio": policy.source_anchor_max_ratio,
+        "sourceAnchorMaxSpreadRatio": policy.source_anchor_max_spread_ratio,
     }
 
 

@@ -211,10 +211,19 @@ def write_ass_subtitles(
     *,
     width: int = 720,
     height: int = 1280,
+    placement_evidence: Sequence[Mapping[str, object]] | None = None,
+    source_to_output: object | None = None,
 ) -> dict[str, object]:
     """Write measured, bounded subtitle plates at the source's native resolution."""
 
-    return _write_layout_ass_subtitles(cues, path, width=width, height=height)
+    return _write_layout_ass_subtitles(
+        cues,
+        path,
+        width=width,
+        height=height,
+        placement_evidence=placement_evidence,
+        source_to_output=source_to_output,
+    )
 
 
 def render_preview(command: Sequence[str]) -> None:
