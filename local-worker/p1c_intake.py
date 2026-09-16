@@ -76,8 +76,7 @@ def load_translator_envelope(
     match = _ENVELOPE_RE.fullmatch(path.name)
     if match is None or document["translator_job_id"] != match.group(1):
         raise TranslatorIntakeError("Translator envelope filename does not match translator_job_id")
-    if document.get("attempt_number") != 1 or "parent_translator_job_id" in document:
-        raise TranslatorIntakeError("CP6 first Translator attempt has invalid retry metadata")
+    _validate_retry_metadata(document)
 
     media_root = _require_directory(settings.media_dir, "DUBVI_MEDIA_DIR")
     media_path = _resolve_ref(media_root, str(document["handoff_media_ref"]), "handoff_media_ref")
@@ -153,6 +152,8 @@ def accept_translator_envelope(
         "handoff_id": accepted.document["handoff_id"],
         "handoff_ref": accepted.document["handoff_sidecar_ref"],
     }
+    if accepted.document.get("parent_translator_job_id") is not None:
+        event["parent_engine_job_id"] = accepted.document["parent_translator_job_id"]
     try:
         publish_status_event(settings, event)
     except TranslatorStatusError as error:
@@ -215,6 +216,22 @@ def _accepted_identity_matches(event: Mapping[str, object], document: Mapping[st
         and event.get("handoff_id") == document.get("handoff_id")
         and event.get("handoff_ref") == document.get("handoff_sidecar_ref")
     )
+
+
+def _validate_retry_metadata(document: Mapping[str, object]) -> None:
+    """Enforce first-attempt and retry lineage semantics at CP6."""
+    attempt_number = document.get("attempt_number")
+    parent_job_id = document.get("parent_translator_job_id")
+    if attempt_number == 1:
+        if "parent_translator_job_id" in document:
+            raise TranslatorIntakeError("CP6 first Translator attempt has invalid retry metadata")
+        return
+    if isinstance(attempt_number, bool) or not isinstance(attempt_number, int) or attempt_number < 2:
+        raise TranslatorIntakeError("CP6 Translator attempt_number must be 1 or a retry number >= 2")
+    if not isinstance(parent_job_id, str) or not parent_job_id.strip():
+        raise TranslatorIntakeError("CP6 retry Translator attempt requires parent_translator_job_id")
+    if parent_job_id == document.get("translator_job_id"):
+        raise TranslatorIntakeError("CP6 retry Translator attempt cannot parent itself")
 
 
 def _status_path(settings: P1CSettings, job_id: str, sequence: int) -> Path:

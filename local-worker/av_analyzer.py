@@ -21,6 +21,7 @@ _UTTERANCE_KEYS = {
 _VISUAL_KEYS = {"startMs", "endMs", "textZh", "confidence"}
 _CONFIDENCES = {"HIGH", "MEDIUM", "LOW"}
 _RECOVERY_WRAPPER_KEYS = {"data", "result", "response", "output"}
+_BOUNDARY_WINDOW_TOLERANCE_MS = WINDOW_OVERLAP_MS
 _RECOVERY_KEYS = (
     "windowStartMs",
     "windowEndMs",
@@ -36,6 +37,7 @@ _RECOVERY_KEYS = (
     "failureClass",
     "normalizationApplied",
     "coordinateNormalizationApplied",
+    "boundaryNormalizationApplied",
     "repairRetryUsed",
     "finalStatus",
 )
@@ -299,6 +301,43 @@ def _normalize_window_coordinates(value: object, start_ms: int, end_ms: int) -> 
     return normalized, True
 
 
+def _normalize_boundary_utterance_window(value: object, start_ms: int, end_ms: int) -> tuple[object, bool]:
+    """Preserve edge-crossing utterances without changing their source timing."""
+    if not isinstance(value, dict) or set(value) != _AV_KEYS:
+        return value, False
+    if value.get("windowStartMs") != start_ms or value.get("windowEndMs") != end_ms:
+        return value, False
+    utterances = value.get("utterances")
+    if not isinstance(utterances, list):
+        return value, False
+
+    starts: list[int] = []
+    ends: list[int] = []
+    for item in utterances:
+        if not isinstance(item, dict) or not _is_int(item.get("startMs")) or not _is_int(item.get("endMs")):
+            return value, False
+        item_start, item_end = int(item["startMs"]), int(item["endMs"])
+        if item_end <= start_ms or item_start >= end_ms:
+            return value, False
+        if item_start < start_ms and start_ms - item_start > _BOUNDARY_WINDOW_TOLERANCE_MS:
+            return value, False
+        if item_end > end_ms and item_end - end_ms > _BOUNDARY_WINDOW_TOLERANCE_MS:
+            return value, False
+        starts.append(item_start)
+        ends.append(item_end)
+    if not starts:
+        return value, False
+    lower, upper = min(starts), max(ends)
+    if lower >= start_ms and upper <= end_ms:
+        return value, False
+    # ponytail: edge-only expansion is bounded by the configured overlap; a
+    # larger or non-overlapping item remains a hard schema failure.
+    normalized = deepcopy(value)
+    normalized["windowStartMs"] = min(start_ms, lower)
+    normalized["windowEndMs"] = max(end_ms, upper)
+    return normalized, True
+
+
 def _valid_interval(value: Mapping[str, object], start_key: str, end_key: str) -> None:
     start, end = value[start_key], value[end_key]
     if not _is_int(start) or not _is_int(end) or start < 0 or end <= start:
@@ -558,7 +597,7 @@ def persist_subdivision_diagnostics(path: Path, document: Mapping[str, object]) 
                     "transportAttempts", "totalTransportAttempts", "httpStatus", "finalTransportStatus",
                     "transientRetryUsed", "schemaValidationStatus",
                     "repairGenerationUsed", "status", "finalStatus", "failureClass",
-                    "coordinateNormalizationApplied",
+                    "coordinateNormalizationApplied", "boundaryNormalizationApplied",
                 )
             })
         safe_windows.append({
@@ -568,6 +607,7 @@ def persist_subdivision_diagnostics(path: Path, document: Mapping[str, object]) 
                 "attemptCount", "logicalAttemptCount", "transportAttempts", "totalTransportAttempts", "httpStatus",
                 "finalTransportStatus", "transientRetryUsed", "schemaValidationStatus",
                 "repairGenerationUsed", "status", "finalStatus", "failureClass",
+                "boundaryNormalizationApplied",
             )
         } | {"children": safe_children})
     safe = {
@@ -652,6 +692,7 @@ class GeminiAVAnalyzer:
             "failureClass": None,
             "normalizationApplied": False,
             "coordinateNormalizationApplied": False,
+            "boundaryNormalizationApplied": False,
             "repairRetryUsed": False,
             "finalStatus": "RUNNING",
         }
@@ -705,9 +746,13 @@ class GeminiAVAnalyzer:
                 self.last_recovery["transientRetryUsed"] = bool(transport.get("transientRetryUsed", False))
                 candidate, normalized = _normalize_structural_response(raw)
                 candidate, coordinate_normalized = _normalize_window_coordinates(candidate, start_ms, end_ms)
+                candidate, boundary_normalized = _normalize_boundary_utterance_window(candidate, start_ms, end_ms)
                 self.last_recovery["normalizationApplied"] = bool(self.last_recovery["normalizationApplied"] or normalized)
                 self.last_recovery["coordinateNormalizationApplied"] = bool(
                     self.last_recovery["coordinateNormalizationApplied"] or coordinate_normalized
+                )
+                self.last_recovery["boundaryNormalizationApplied"] = bool(
+                    self.last_recovery["boundaryNormalizationApplied"] or boundary_normalized
                 )
                 try:
                     result = validate_av_analysis(candidate)
@@ -723,9 +768,9 @@ class GeminiAVAnalyzer:
                 self.last_recovery["schemaValidationStatus"] = "VALID"
                 self.last_recovery["finalStatus"] = (
                     "AV_SCHEMA_VALID_FIRST_PASS"
-                    if attempt == 0 and not normalized
+                    if attempt == 0 and not (normalized or boundary_normalized)
                     else "AV_SCHEMA_VALID_AFTER_NORMALIZATION"
-                    if attempt == 0
+                    if attempt == 0 and (normalized or boundary_normalized)
                     else "AV_SCHEMA_VALID_AFTER_RETRY"
                 )
                 return result
@@ -758,6 +803,7 @@ class GeminiAVAnalyzer:
                 "failureClass": None,
                 "normalizationApplied": False,
                 "coordinateNormalizationApplied": False,
+                "boundaryNormalizationApplied": False,
                 "repairRetryUsed": False,
                 "finalStatus": "AV_CACHE_HIT",
             }
@@ -833,6 +879,7 @@ def analyze_media_windows_with_subdivision(
             "transientRetryUsed": False,
             "schemaValidationStatus": "NOT_RUN",
             "repairGenerationUsed": False,
+            "boundaryNormalizationApplied": False,
             "finalStatus": None,
             "status": "AV_PARENT_WINDOW_STARTED",
             "failureClass": None,
@@ -852,6 +899,7 @@ def analyze_media_windows_with_subdivision(
                 "transientRetryUsed": bool(recovery.get("transientRetryUsed", False)),
                 "schemaValidationStatus": recovery.get("schemaValidationStatus", "NOT_RUN"),
                 "repairGenerationUsed": bool(recovery.get("repairGenerationUsed", False)),
+                "boundaryNormalizationApplied": bool(recovery.get("boundaryNormalizationApplied", False)),
                 "finalStatus": recovery.get("finalStatus"),
                 "failureClass": error.classification,
                 "status": "AV_PARENT_PROVIDER_ERROR",
@@ -871,6 +919,7 @@ def analyze_media_windows_with_subdivision(
                 "transientRetryUsed": bool(recovery.get("transientRetryUsed", False)),
                 "schemaValidationStatus": recovery.get("schemaValidationStatus", "INVALID"),
                 "repairGenerationUsed": bool(recovery.get("repairGenerationUsed", False)),
+                "boundaryNormalizationApplied": bool(recovery.get("boundaryNormalizationApplied", False)),
                 "finalStatus": recovery.get("finalStatus"),
                 "failureClass": error.failure_class,
                 "status": "AV_PARENT_WINDOW_FAILED",
@@ -902,6 +951,7 @@ def analyze_media_windows_with_subdivision(
                     "finalStatus": None,
                     "failureClass": None,
                     "coordinateNormalizationApplied": False,
+                    "boundaryNormalizationApplied": False,
                 }
                 try:
                     child_document = analyzer.analyze_media(
@@ -965,6 +1015,7 @@ def analyze_media_windows_with_subdivision(
                         "repairGenerationUsed": bool(recovery.get("repairGenerationUsed", False)),
                         "finalStatus": recovery.get("finalStatus"),
                         "coordinateNormalizationApplied": bool(recovery.get("coordinateNormalizationApplied")),
+                        "boundaryNormalizationApplied": bool(recovery.get("boundaryNormalizationApplied")),
                         "status": _valid_window_status("AV_CHILD", recovery),
                     })
                     children.append(child)
@@ -984,6 +1035,7 @@ def analyze_media_windows_with_subdivision(
                 "repairGenerationUsed": bool(recovery.get("repairGenerationUsed", False)),
                 "finalStatus": recovery.get("finalStatus"),
                 "coordinateNormalizationApplied": bool(recovery.get("coordinateNormalizationApplied")),
+                "boundaryNormalizationApplied": bool(recovery.get("boundaryNormalizationApplied")),
                 "status": _valid_window_status("AV_PRIMARY", recovery),
             })
             documents.append(document)

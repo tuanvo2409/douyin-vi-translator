@@ -8,7 +8,7 @@ from p1c_config import P1CSettings
 from p1c_lease_client import LeaseBridgeResponse, LeaseBridgeUnavailable
 from p1c_status import TranslatorStatusError, publish_status_event
 import p1c_worker
-from p1c_worker import run_lease_aware_work
+from p1c_worker import _event, run_lease_aware_work
 
 
 JOB = "11111111-1111-4111-8111-111111111111"
@@ -158,6 +158,19 @@ class WorkerTests(unittest.TestCase):
             def acquire(_, job): raise AssertionError("acquire must not run")
         result = run_lease_aware_work(self.job, settings, Client(), lambda value: (_ for _ in ()).throw(AssertionError()))
         self.assertEqual("accepted_status_unavailable", result.outcome)
+
+    def test_retry_worker_event_carries_parent_engine_job_identity(self):
+        retry_job = dict(self.job)
+        retry_job.update({
+            "translator_job_id": "99999999-9999-4999-8999-999999999999",
+            "parent_translator_job_id": JOB,
+            "attempt_number": 2,
+        })
+        event = _event(
+            retry_job, 2, "started", "running", LEASE,
+            "2026-09-11T00:00:00.000Z",
+        )
+        self.assertEqual(JOB, event["parent_engine_job_id"])
 
 
 if __name__ == "__main__":

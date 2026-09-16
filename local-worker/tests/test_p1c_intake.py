@@ -113,6 +113,75 @@ class P1CIntakeTests(unittest.TestCase):
         self.assertEqual(before, event_path.read_bytes())
         self.assertEqual("accepted", load_status_event(self.settings, self.ids["translator"], 1)["state"])
 
+    def test_canonical_retry_metadata_is_accepted(self) -> None:
+        retry_id = "88888888-8888-4888-8888-888888888888"
+        retry = dict(self.envelope)
+        retry["translator_job_id"] = retry_id
+        retry["parent_translator_job_id"] = self.ids["translator"]
+        retry["attempt_number"] = 2
+        retry_path = self.jobs / f"translator-job-{retry_id}.job.json"
+        retry_path.write_bytes(canonical_json_bytes(retry))
+        accepted = accept_translator_envelope(
+            retry_path, self.settings, occurred_at_utc="2026-09-11T10:03:00+07:00"
+        )
+        self.assertEqual(retry_id, accepted.document["translator_job_id"])
+        self.assertEqual(2, accepted.document["attempt_number"])
+        self.assertEqual(self.ids["translator"], accepted.document["parent_translator_job_id"])
+        accepted_event = load_status_event(self.settings, retry_id, 1)
+        self.assertEqual(self.ids["translator"], accepted_event["parent_engine_job_id"])
+
+    def test_later_retry_metadata_is_accepted(self) -> None:
+        retry_id = "99999999-9999-4999-8999-999999999999"
+        retry = dict(self.envelope)
+        retry["translator_job_id"] = retry_id
+        retry["parent_translator_job_id"] = "88888888-8888-4888-8888-888888888888"
+        retry["attempt_number"] = 3
+        retry_path = self.jobs / f"translator-job-{retry_id}.job.json"
+        retry_path.write_bytes(canonical_json_bytes(retry))
+        accepted = accept_translator_envelope(
+            retry_path, self.settings, occurred_at_utc="2026-09-11T10:04:00+07:00"
+        )
+        self.assertEqual(3, accepted.document["attempt_number"])
+
+    def test_retry_without_parent_lineage_is_rejected(self) -> None:
+        retry_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        retry = dict(self.envelope)
+        retry["translator_job_id"] = retry_id
+        retry["attempt_number"] = 2
+        retry_path = self.jobs / f"translator-job-{retry_id}.job.json"
+        retry_path.write_bytes(canonical_json_bytes(retry))
+        with self.assertRaises(TranslatorIntakeError):
+            accept_translator_envelope(retry_path, self.settings)
+
+    def test_retry_with_invalid_parent_id_is_rejected(self) -> None:
+        retry_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        retry = dict(self.envelope)
+        retry["translator_job_id"] = retry_id
+        retry["parent_translator_job_id"] = "not-a-uuid"
+        retry["attempt_number"] = 2
+        retry_path = self.jobs / f"translator-job-{retry_id}.job.json"
+        retry_path.write_bytes(canonical_json_bytes(retry))
+        with self.assertRaises(TranslatorIntakeError):
+            accept_translator_envelope(retry_path, self.settings)
+
+    def test_first_attempt_with_parent_lineage_is_rejected(self) -> None:
+        invalid = dict(self.envelope)
+        invalid["parent_translator_job_id"] = "88888888-8888-4888-8888-888888888888"
+        self.write_envelope(invalid)
+        with self.assertRaises(TranslatorIntakeError):
+            accept_translator_envelope(self.envelope_path, self.settings)
+
+    def test_retry_cannot_name_itself_as_parent(self) -> None:
+        retry_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        retry = dict(self.envelope)
+        retry["translator_job_id"] = retry_id
+        retry["parent_translator_job_id"] = retry_id
+        retry["attempt_number"] = 2
+        retry_path = self.jobs / f"translator-job-{retry_id}.job.json"
+        retry_path.write_bytes(canonical_json_bytes(retry))
+        with self.assertRaises(TranslatorIntakeError):
+            accept_translator_envelope(retry_path, self.settings)
+
     def test_handoff_alone_does_not_ack(self) -> None:
         self.assertIsNone(accept_next_translator_job(self.settings))
         self.assertFalse((self.status / "translator").exists())

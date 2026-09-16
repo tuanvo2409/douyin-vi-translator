@@ -186,6 +186,47 @@ class AvResponseRecoveryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             av_analyzer.validate_av_analysis({**document, "unsupported": True})
 
+    def test_real_page_a_boundary_utterance_is_adapted_without_timing_mutation(self) -> None:
+        boundary = _window_av(25_000, 40_000)
+        boundary["utterances"][0]["startMs"] = 24_900
+        analyzer, _ = self._analyzer([boundary, boundary])
+        with tempfile.TemporaryDirectory() as directory:
+            result = analyzer.analyze_media(self._media(directory), start_ms=25_000, end_ms=40_000)
+        self.assertEqual(24_900, result["utterances"][0]["startMs"])
+        self.assertEqual(24_900, result["windowStartMs"])
+        self.assertTrue(analyzer.last_recovery["boundaryNormalizationApplied"])
+
+    def test_far_outside_nested_utterance_still_fails_closed(self) -> None:
+        invalid = _window_av(25_000, 40_000)
+        invalid["utterances"][0].update(startMs=19_000, endMs=20_000)
+        analyzer, _ = self._analyzer([invalid, invalid])
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(av_analyzer.AVResponseRecoveryError) as raised:
+                analyzer.analyze_media(self._media(directory), start_ms=25_000, end_ms=40_000)
+        self.assertEqual("NESTED_UTTERANCE_SCHEMA_MISMATCH", raised.exception.failure_class)
+
+    def test_boundary_utterance_survives_subdivision_with_canonical_identity(self) -> None:
+        invalid_parent = _window_av(0, 30_000)
+        invalid_parent["scene"] = "bad-shape"
+        first = _window_av(0, 15_000, "第一句")
+        second = _window_av(12_000, 27_000, "跨边界")
+        second["utterances"][0].update(startMs=11_900, endMs=13_000)
+        third = _window_av(24_000, 30_000, "第三句")
+        analyzer, _ = self._analyzer([invalid_parent, invalid_parent, first, second, third])
+        with tempfile.TemporaryDirectory() as directory:
+            result = av_analyzer.analyze_media_windows_with_subdivision(
+                analyzer,
+                self._media(directory),
+                30_000,
+            )
+        av_utterances = result["av_analysis"]["utterances"]
+        self.assertIn(11_900, [item["startMs"] for item in av_utterances])
+        dialogue = result["reconstructed"]["dialogue"]
+        identifiers = [item["utteranceId"] for item in dialogue]
+        self.assertEqual(len(identifiers), len(set(identifiers)))
+        boundary = next(item for item in dialogue if item["startMs"] == 11_900)
+        self.assertTrue(boundary["utteranceId"].startswith("utt_v1_d_00011900_"))
+
 
 class AvSchemaParityTests(unittest.TestCase):
     def _schema(self) -> dict[str, object]:

@@ -181,7 +181,7 @@ def _event(
     lease_id: str,
     occurred_at_utc: str | None,
 ) -> dict[str, object]:
-    return {
+    event = {
         "contract_version": 1,
         "message_kind": "engine_status_event",
         "event_id": str(uuid.uuid4()),
@@ -198,6 +198,9 @@ def _event(
         "handoff_id": job["handoff_id"],
         "handoff_ref": job["handoff_sidecar_ref"],
     }
+    if job.get("parent_translator_job_id") is not None:
+        event["parent_engine_job_id"] = job["parent_translator_job_id"]
+    return event
 
 
 def _normalize_timestamp(value: str) -> str:
