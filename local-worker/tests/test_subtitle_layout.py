@@ -168,6 +168,13 @@ class SubtitleLayoutTests(unittest.TestCase):
         ass = render_ass_document(result["displayCues"], policy)
         self.assertIn("Style: SubtitleText,Arial,34,", ass)
 
+    def test_ass_text_style_uses_explicit_presentation_color(self) -> None:
+        result = layout_subtitles([_cue("Màu thương hiệu")])
+        cyan = render_ass_document(result["displayCues"], presentation_color="#00FFFF")
+        yellow = render_ass_document(result["displayCues"], presentation_color="#FFE600")
+        self.assertIn("Style: SubtitleText,Arial,38,&H00FFFF00&,&H00FFFF00&", cyan)
+        self.assertIn("Style: SubtitleText,Arial,38,&H0000E6FF&,&H0000E6FF&", yellow)
+
     def test_rendered_box_is_centered_around_the_text_position(self) -> None:
         policy = SubtitleLayoutPolicy()
         result = layout_subtitles([_cue("Xin chào.", start=0, end=1_000)], policy=policy)

@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from canonical_profile import resolve_canonical_profile
-from modern_p1c_adapter import _localization_stage_profile, run_modern_p1c
+from modern_p1c_adapter import _localization_stage_profile, _presentation_render_config, run_modern_p1c
 
 
 class ModernP1CAdapterTests(unittest.TestCase):
@@ -13,6 +13,12 @@ class ModernP1CAdapterTests(unittest.TestCase):
         self.assertEqual("vn_native_light_comedy", _localization_stage_profile({"localizationProfile": "page_goc_tro_bat_on"}))
         self.assertEqual("vn_native_light_comedy", _localization_stage_profile({"localizationProfile": "page_giai_cuu_chuong_lon"}))
         self.assertEqual("neutral_faithful", _localization_stage_profile({"localizationProfile": "loc-v1"}))
+
+    def test_page_profiles_reach_modern_presentation_render_configuration(self) -> None:
+        page_a = resolve_canonical_profile({"localization_profile": "page_goc_tro_bat_on", "target_platform": "tiktok"})
+        page_b = resolve_canonical_profile({"localization_profile": "page_giai_cuu_chuong_lon", "target_platform": "tiktok"})
+        self.assertEqual("#00FFFF", _presentation_render_config(page_a)["presentation_color"])
+        self.assertEqual("#FFE600", _presentation_render_config(page_b)["presentation_color"])
 
     def test_p1c_fallback_keeps_legacy_graph_reachable_without_modern_stages(self) -> None:
         import p1c_processing

@@ -166,10 +166,13 @@ def layout_subtitles(
 def render_ass_document(
     display_cues: Sequence[Mapping[str, object]],
     policy: SubtitleLayoutPolicy | None = None,
+    *,
+    presentation_color: str | None = None,
 ) -> str:
     """Render measured display cues as explicit ASS text and box events."""
 
     policy = policy or SubtitleLayoutPolicy()
+    primary_color = _ass_color(presentation_color or "#FFFFFF")
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -177,7 +180,7 @@ def render_ass_document(
         f"PlayResY: {policy.frame_height}",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: SubtitleText,{policy.font_name},{policy.font_size},&H00FFFFFF,&H00FFFFFF,&H00101010,&H00000000,0,0,0,0,100,100,0,0,1,{policy.outline_px},{policy.shadow_px},5,0,0,0,1",
+        f"Style: SubtitleText,{policy.font_name},{policy.font_size},{primary_color},{primary_color},&H00101010,&H00000000,0,0,0,0,100,100,0,0,1,{policy.outline_px},{policy.shadow_px},5,0,0,0,1",
         f"Style: SubtitleBox,{policy.font_name},1,&H99000000,&H99000000,&H99000000,&H99000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -209,6 +212,7 @@ def write_ass_subtitles(
     policy: SubtitleLayoutPolicy | None = None,
     placement_evidence: Sequence[Mapping[str, object]] | None = None,
     source_to_output: object | None = None,
+    presentation_color: str | None = None,
 ) -> dict[str, object]:
     """Write a measured ASS overlay and return its diagnostics document."""
 
@@ -223,8 +227,20 @@ def write_ass_subtitles(
         source_to_output=source_to_output,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_ass_document(result["displayCues"], policy), encoding="utf-8")
+    path.write_text(
+        render_ass_document(result["displayCues"], policy, presentation_color=presentation_color),
+        encoding="utf-8",
+    )
     return result
+
+
+def _ass_color(value: str) -> str:
+    """Convert an explicit RGB presentation color to ASS's BGR notation."""
+
+    if not isinstance(value, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", value.strip()):
+        raise SubtitleLayoutError("presentation color must be a six-digit RGB hex value")
+    rgb = value.strip()[1:].upper()
+    return f"&H00{rgb[4:6]}{rgb[2:4]}{rgb[0:2]}&"
 
 
 _DIALOGUE_CATEGORIES = frozenset({"DIALOGUE_SUBTITLE", "CHINESE_DIALOGUE_SUBTITLE"})

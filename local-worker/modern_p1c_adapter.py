@@ -12,6 +12,17 @@ class ModernP1CAdapterError(RuntimeError):
     """Modern canonical processing cannot safely continue."""
 
 
+def _presentation_render_config(profile: CanonicalLocalizationProfile) -> dict[str, object]:
+    """Project canonical presentation metadata into the renderer boundary."""
+
+    presentation = dict(profile.subtitle_presentation)
+    color = presentation.get("color")
+    return {
+        "presentation": presentation,
+        "presentation_color": color if isinstance(color, str) and color.strip() else None,
+    }
+
+
 _LOCALIZATION_STAGE_PROFILES = {
     "loc-v1": "neutral_faithful",
     "page_goc_tro_bat_on": "vn_native_light_comedy",
@@ -92,8 +103,13 @@ def build_modern_stage_bundle(*, runtime_config: Mapping[str, object]) -> dict[s
         if not isinstance(timeline, Mapping):
             raise ModernP1CAdapterError("adaptive timeline is missing at render seam")
         ass_path = runtime_paths["output_dir"] / "subtitles.ass"
-        result = write_ass_subtitles(cues, ass_path)
-        result["presentation"] = dict(profile.subtitle_presentation)
+        presentation_config = _presentation_render_config(profile)
+        result = write_ass_subtitles(
+            cues,
+            ass_path,
+            presentation_color=presentation_config["presentation_color"],
+        )
+        result["presentation"] = presentation_config["presentation"]
         voice_inputs = [
             (runtime_paths["output_dir"] / Path(str(event["audioPath"])), int(event["scheduledStartMs"]))
             for event in timeline["voiceEvents"]

@@ -48,6 +48,7 @@ _PROFILES = {
         {
             **_SAFE_SUBTITLE_PRESENTATION,
             "brand_overrides": None,
+            "color": "#00FFFF",
             "brand_color_options": ["cyan", "yellow"],
             "configuration_required_reason": "USER_PRODUCT_DECISION: Page A recovery evidence conflicts on cyan versus yellow",
             "brand_configuration_required": True,
@@ -61,6 +62,7 @@ _PROFILES = {
         {
             **_SAFE_SUBTITLE_PRESENTATION,
             "brand_overrides": {"badge_side": "left", "background": "white", "text": "black"},
+            "color": "#FFE600",
             "badge_side": "left",
             "background": "white",
             "text": "black",
