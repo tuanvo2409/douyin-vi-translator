@@ -24,6 +24,7 @@ from p1c_processing import (
     publish_canonical_output,
     run_canonical_processing,
     run_child_job,
+    _receipt_to_terminal_event,
 )
 from p1c_status import load_status_event, publish_status_event
 from p1c_worker import WorkerResult
@@ -266,6 +267,24 @@ class ProcessingTests(unittest.TestCase):
             result = run_canonical_processing(crash_settings, self.envelope_path, crash_client, occurred_at_utc="2026-09-11T00:04:00Z")
         self.assertEqual("completion_reconciliation_required_lease_released", result.outcome)
         self.assertFalse((crash_settings.engine_status_dir / "translator" / self.ids["translator"] / "event-000003.json").exists())
+
+    def test_terminal_event_carries_retry_parent_engine_job_identity(self):
+        retry_document = {
+            **self.document,
+            "translator_job_id": "99999999-9999-4999-8999-999999999999",
+            "attempt_number": 4,
+            "parent_translator_job_id": self.ids["translator"],
+            "lease_id": self.started["lease_id"],
+        }
+        event = _receipt_to_terminal_event(
+            retry_document,
+            {
+                "outcome": "failed",
+                "error_classification": "PROCESSING_FAILED",
+                "diagnostic_summary": "NO_READY_GEMINI_KEY",
+            },
+        )
+        self.assertEqual(self.ids["translator"], event["parent_engine_job_id"])
 
 
 if __name__ == "__main__":

@@ -687,6 +687,8 @@ def _receipt_to_terminal_event(document: Mapping[str, object], receipt: Mapping[
         "handoff_id": document["handoff_id"],
         "handoff_ref": document["handoff_sidecar_ref"],
     }
+    if document.get("parent_translator_job_id") is not None:
+        event["parent_engine_job_id"] = document["parent_translator_job_id"]
     if event_kind == "succeeded":
         event["output_fingerprint"] = receipt.get("output_fingerprint")
     elif event_kind == "rejected":
