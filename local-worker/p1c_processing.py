@@ -29,6 +29,7 @@ from p1c_config import P1CSettings
 from p1c_intake import load_translator_envelope
 from p1c_status import load_status_event, publish_status_event
 from p1c_worker import HeavyWorkHandle, WorkerResult, run_lease_aware_work
+from canonical_profile import resolve_canonical_profile
 
 
 MAX_RECEIPT_BYTES = 64 * 1024
@@ -163,11 +164,19 @@ def build_canonical_runtime_config(
 ) -> dict[str, object]:
     """Build the bounded CP8 runtime profile without importing engine clients."""
 
-    voice = capcut_voice or os.environ.get("DUBVI_CAPCUT_VOICE", "BV421_vivn_streaming")
+    profile = resolve_canonical_profile(document)
+    if profile.subtitle_presentation.get("brand_configuration_required"):
+        raise CanonicalProcessingError(
+            f"canonical subtitle presentation for {profile.profile_id} requires product configuration"
+        )
+    voice = capcut_voice or profile.voice
     if not isinstance(voice, str) or not voice.strip():
         raise CanonicalProcessingError("canonical CapCut voice must be nonblank")
     return {
         "voice": {"name": voice.strip(), "maxTempo": 1.12},
+        "ttsProvider": profile.tts_provider,
+        "persona": profile.persona,
+        "subtitlePresentation": dict(profile.subtitle_presentation),
         "ocr": {
             "enabled": True,
             "sampleFrames": 3,
@@ -387,6 +396,7 @@ def run_child_job(settings: P1CSettings, translator_job_id: str) -> dict[str, ob
     policy_mode = os.environ.get("DUBVI_POLICY_MODE", "off").strip().lower()
     if policy_mode not in {"off", "review", "enforce"}:
         raise CanonicalProcessingError("DUBVI_POLICY_MODE must be off, review, or enforce")
+    profile = resolve_canonical_profile(accepted.document)
     runtime_config = build_canonical_runtime_config(accepted.document)
     legacy_job = {
         "id": job_id,
@@ -394,6 +404,11 @@ def run_child_job(settings: P1CSettings, translator_job_id: str) -> dict[str, ob
         "sourceName": source.name,
         "configJson": runtime_config,
         "attempt_number": 1,
+        "localizationProfile": profile.profile_id,
+        "modernProfile": profile,
+        "sourcePath": str(source),
+        "outputDir": str(work_root),
+        "handoffId": accepted.document["handoff_id"],
     }
     adapter = CanonicalRpcAdapter()
     policy_holder: dict[str, object] = {"deep_policy": None}
@@ -411,7 +426,7 @@ def run_child_job(settings: P1CSettings, translator_job_id: str) -> dict[str, ob
 
     legacy_settings = _legacy_settings(settings, work_base, policy_mode)
     try:
-        _legacy_process_job(
+        _modern_process_job(
             legacy_settings,
             adapter,
             legacy_job,
@@ -497,6 +512,44 @@ def _legacy_process_job(settings, adapter: CanonicalRpcAdapter, job: dict[str, o
     from dubvi_worker import process_job
 
     process_job(settings, adapter, job, **kwargs)
+
+
+def _modern_process_job(settings, adapter: CanonicalRpcAdapter, job: dict[str, object], **kwargs: object) -> None:
+    """Canonical child boundary for the modern chain.
+
+    The stage runner is injected by the canonical/demo integration.  Keeping
+    this boundary explicit prevents P1C from silently falling back to legacy
+    orchestration when modern inputs are unavailable.
+    """
+
+    from modern_p1c_adapter import run_modern_p1c
+
+    stages = job.get("modernStages")
+    if not isinstance(stages, Mapping):
+        # Backward-compatible P1C operation remains authoritative until the
+        # caller supplies a concrete modern stage bundle. This is an explicit
+        # seam, not a claim that the legacy graph is the modern route.
+        _legacy_process_job(settings, adapter, job, **kwargs)
+        return
+    required = ("source", "localization", "tts", "delivery", "timeline", "subtitle")
+    if any(not callable(stages.get(name)) for name in required):
+        _legacy_process_job(settings, adapter, job, **kwargs)
+        return
+    result = run_modern_p1c(
+        Path(str(job["sourcePath"])),
+        Path(str(job["outputDir"])),
+        {"translator_job_id": job["id"], "handoff_id": job.get("handoffId")},
+        job["modernProfile"],
+        source_stage=stages["source"],
+        localization_stage=stages["localization"],
+        tts_stage=stages["tts"],
+        delivery_stage=stages["delivery"],
+        timeline_stage=stages["timeline"],
+        subtitle_stage=stages["subtitle"],
+    )
+    output_path = result.get("outputPath") if isinstance(result, Mapping) else None
+    if isinstance(output_path, str):
+        adapter.report(str(job["id"]), "complete", 100, status="complete", output_path=output_path)
 
 
 def _legacy_settings(settings: P1CSettings, work_base: Path, policy_mode: str):
