@@ -165,10 +165,6 @@ def build_canonical_runtime_config(
     """Build the bounded CP8 runtime profile without importing engine clients."""
 
     profile = resolve_canonical_profile(document)
-    if profile.subtitle_presentation.get("brand_configuration_required"):
-        raise CanonicalProcessingError(
-            f"canonical subtitle presentation for {profile.profile_id} requires product configuration"
-        )
     voice = capcut_voice or profile.voice
     if not isinstance(voice, str) or not voice.strip():
         raise CanonicalProcessingError("canonical CapCut voice must be nonblank")
@@ -176,7 +172,9 @@ def build_canonical_runtime_config(
         "voice": {"name": voice.strip(), "maxTempo": 1.12},
         "ttsProvider": profile.tts_provider,
         "persona": profile.persona,
+        "localizationProfile": profile.profile_id,
         "subtitlePresentation": dict(profile.subtitle_presentation),
+        "brandDecision": profile.subtitle_presentation.get("configuration_required_reason"),
         "ocr": {
             "enabled": True,
             "sampleFrames": 3,
@@ -522,15 +520,14 @@ def _modern_process_job(settings, adapter: CanonicalRpcAdapter, job: dict[str, o
     orchestration when modern inputs are unavailable.
     """
 
-    from modern_p1c_adapter import run_modern_p1c
+    from modern_p1c_adapter import build_modern_stage_bundle, run_modern_p1c
 
     stages = job.get("modernStages")
     if not isinstance(stages, Mapping):
-        # Backward-compatible P1C operation remains authoritative until the
-        # caller supplies a concrete modern stage bundle. This is an explicit
-        # seam, not a claim that the legacy graph is the modern route.
-        _legacy_process_job(settings, adapter, job, **kwargs)
-        return
+        if "modernProfile" not in job or "configJson" not in job:
+            _legacy_process_job(settings, adapter, job, **kwargs)
+            return
+        stages = build_modern_stage_bundle(runtime_config=job.get("configJson") if isinstance(job.get("configJson"), Mapping) else {})
     required = ("source", "localization", "tts", "delivery", "timeline", "subtitle")
     if any(not callable(stages.get(name)) for name in required):
         _legacy_process_job(settings, adapter, job, **kwargs)

@@ -13,7 +13,13 @@ class CanonicalProfileTests(unittest.TestCase):
         self.assertEqual("BV421_vivn_streaming", page_b.voice)
         self.assertNotEqual(page_a.persona, page_b.persona)
         self.assertEqual("source_aware_measured", page_a.subtitle_presentation["layout"])
+        self.assertEqual(["cyan", "yellow"], page_a.subtitle_presentation["brand_color_options"])
+        self.assertTrue(page_a.subtitle_presentation["brand_configuration_required"])
         self.assertEqual(2, page_b.subtitle_presentation["max_visible_lines"])
+        self.assertEqual(
+            {"badge_side": "left", "background": "white", "text": "black"},
+            page_b.subtitle_presentation["brand_overrides"],
+        )
 
     def test_unknown_profile_fails_closed_with_configuration_required(self) -> None:
         with self.assertRaises(CanonicalProfileConfigurationError) as raised:

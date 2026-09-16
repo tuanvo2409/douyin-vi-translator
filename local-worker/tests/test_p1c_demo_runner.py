@@ -223,7 +223,7 @@ class TranslatorDemoRunnerTests(unittest.TestCase):
         path, document = self._write_job(1)
         accept_translator_envelope(path, self.settings)
         self._publish_started(document)
-        with patch.object(p1c_processing, "_legacy_process_job", side_effect=RuntimeError("boom")):
+        with patch.object(p1c_processing, "_modern_process_job", side_effect=RuntimeError("boom")):
             processing = run_child_job(self.settings, str(document["translator_job_id"]))
         self.assertEqual("PROCESSING_FAILED", processing["error_classification"])
 
@@ -233,7 +233,7 @@ class TranslatorDemoRunnerTests(unittest.TestCase):
             candidate.write_bytes(b"rendered")
             adapter.report(job["id"], "complete", 100, status="complete", output_path=str(candidate))
 
-        with patch.object(p1c_processing, "_legacy_process_job", side_effect=fake_process), \
+        with patch.object(p1c_processing, "_modern_process_job", side_effect=fake_process), \
              patch.object(p1c_processing, "publish_canonical_output", side_effect=CanonicalOutputConflict("different")):
             conflict = run_child_job(self.settings, str(document["translator_job_id"]))
         self.assertEqual("FINAL_PATH_CONFLICT", conflict["error_classification"])
@@ -241,7 +241,7 @@ class TranslatorDemoRunnerTests(unittest.TestCase):
         path2, document2 = self._write_job(2)
         accept_translator_envelope(path2, self.settings)
         self._publish_started(document2)
-        with patch.object(p1c_processing, "_legacy_process_job", side_effect=fake_process), \
+        with patch.object(p1c_processing, "_modern_process_job", side_effect=fake_process), \
              patch.object(p1c_processing, "publish_canonical_output", side_effect=CanonicalProcessingError("verify")):
             verify = run_child_job(self.settings, str(document2["translator_job_id"]))
         self.assertEqual("OUTPUT_VERIFY_FAILED", verify["error_classification"])

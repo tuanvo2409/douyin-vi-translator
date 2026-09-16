@@ -180,6 +180,9 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual({"enabled": True, "sampleFrames": 3, "discoveryFrames": 8, "minConfidence": 65, "llmCorrection": False}, profile["ocr"])
         self.assertEqual({"xPercent": 2, "yPercent": 66, "widthPercent": 96, "heightPercent": 9.8, "blurPx": 24}, profile["roi"])
         self.assertEqual("duck", profile["audioMode"])
+        page_a = build_canonical_runtime_config({**self.document, "localization_profile": "page_goc_tro_bat_on"})
+        self.assertEqual("BV007_streaming", page_a["voice"]["name"])
+        self.assertIn("USER_PRODUCT_DECISION", str(page_a["brandDecision"]))
         result = SimpleNamespace(
             overall_decision=SimpleNamespace(value="review"),
             reason_codes=("A", "B"),
@@ -232,7 +235,7 @@ class ProcessingTests(unittest.TestCase):
             target.write_bytes(b"fake rendered output")
             adapter.report(job["id"], "complete", 100, status="complete", output_path=str(target))
 
-        with patch.dict(os.environ, {"DUBVI_POLICY_MODE": "off"}, clear=False), patch.object(p1c_processing, "_legacy_process_job", side_effect=fake_process):
+        with patch.dict(os.environ, {"DUBVI_POLICY_MODE": "off"}, clear=False), patch.object(p1c_processing, "_modern_process_job", side_effect=fake_process):
             receipt = run_child_job(self.settings, self.ids["translator"])
         self.assertEqual("succeeded", receipt["outcome"])
         self.assertTrue((self.settings.output_dir / "p1c" / self.ids["translator"] / "output.mp4").is_file())

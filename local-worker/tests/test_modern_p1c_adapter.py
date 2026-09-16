@@ -5,10 +5,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from canonical_profile import resolve_canonical_profile
-from modern_p1c_adapter import run_modern_p1c
+from modern_p1c_adapter import _localization_stage_profile, run_modern_p1c
 
 
 class ModernP1CAdapterTests(unittest.TestCase):
+    def test_canonical_page_profiles_choose_explicit_localization_stage_profiles(self) -> None:
+        self.assertEqual("vn_native_light_comedy", _localization_stage_profile({"localizationProfile": "page_goc_tro_bat_on"}))
+        self.assertEqual("vn_native_light_comedy", _localization_stage_profile({"localizationProfile": "page_giai_cuu_chuong_lon"}))
+        self.assertEqual("neutral_faithful", _localization_stage_profile({"localizationProfile": "loc-v1"}))
+
     def test_p1c_fallback_keeps_legacy_graph_reachable_without_modern_stages(self) -> None:
         import p1c_processing
 
