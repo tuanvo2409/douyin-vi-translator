@@ -104,6 +104,16 @@ class DeliveryPlannerTests(unittest.TestCase):
         self.assertTrue(plan["needsSpeechWindowRefinement"])
         self.assertIn("TIMING_EVIDENCE_SUSPICIOUS", plan["reasonCodes"])
 
+    def test_measured_audio_uses_visual_delivery_when_semantic_window_is_short(self) -> None:
+        item = _utterance(semantic_end=480, tts_ms=1344)
+        item["audioPath"] = "audio/u1.mp3"
+
+        plan = plan_utterance(item)
+
+        self.assertEqual("DELIVERY_REWRITE", plan["action"])
+        self.assertFalse(plan["needsSpeechWindowRefinement"])
+        self.assertLess(plan["visualSpeed"], 0.5)
+
     def test_reliable_wider_speech_window_overrides_semantic_window(self) -> None:
         plan = plan_utterance(
             _utterance(

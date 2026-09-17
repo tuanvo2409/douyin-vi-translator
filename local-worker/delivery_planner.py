@@ -126,6 +126,7 @@ def plan_utterance(
         and base_window <= policy.minimum_meaningful_source_window_ms
         and measured / base_window >= policy.suspicion_tts_ratio
         and base_window / required_at_max_tempo < policy.suspicion_speed
+        and not utterance.get("audioPath")
     ):
         result["action"] = "REFINE_SPEECH_WINDOW"
         result["needsSpeechWindowRefinement"] = True

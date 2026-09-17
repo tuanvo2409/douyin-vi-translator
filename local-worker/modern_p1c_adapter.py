@@ -245,6 +245,7 @@ def build_modern_stage_bundle(*, runtime_config: Mapping[str, object]) -> dict[s
             enriched.append({
                 **item,
                 "ttsMeasuredMs": int(event["fittedDurationMs"]),
+                "audioPath": str(event["audioPath"]),
                 "nextSpeechStartMs": int(event["effectiveEndMs"]),
             })
         return list(plan_delivery(enriched, policy=DeliveryPolicy(max_tempo=1.0))["plans"])
