@@ -176,8 +176,13 @@ def run_tts_timing(
             if needs_review:
                 event.update({"reviewRequired": True, "reviewReason": "TTS_TIMING_OVERFLOW"})
                 review_by_id.setdefault(identifier, "TTS_TIMING_OVERFLOW")
-        except Exception:
-            event.update({"reviewRequired": True, "reviewReason": "TTS_FAILED", "audioPath": None})
+        except Exception as error:
+            event.update({
+                "reviewRequired": True,
+                "reviewReason": "TTS_FAILED",
+                "audioPath": None,
+                "providerError": f"{type(error).__name__}: {error}",
+            })
             review_by_id.setdefault(identifier, "TTS_FAILED")
         voice_events.append(event)
         event_sources.append((utterance, event))
@@ -335,6 +340,7 @@ def _base_event(utterance: Mapping[str, object], window: Mapping[str, int], appr
         "tempoRequiredAfter": None,
         "finalTtsMs": None,
         "fittedDurationMs": None,
+        "providerError": None,
         "reviewRequired": False,
         "reviewReason": None,
         "audioPath": None,

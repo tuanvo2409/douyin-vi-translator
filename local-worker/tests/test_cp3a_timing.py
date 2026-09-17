@@ -263,8 +263,50 @@ class TtsTimingTests(unittest.TestCase):
             raise RuntimeError("synthetic TTS failure")
 
         result = run_tts_timing(self._alignment(), self.output, synthesizer=fail)
-        self.assertTrue(result["rows"][0]["reviewRequired"])
-        self.assertEqual("TTS_FAILED", result["rows"][0]["reviewReason"])
+        row = result["rows"][0]
+        self.assertTrue(row["reviewRequired"])
+        self.assertEqual("TTS_FAILED", row["reviewReason"])
+        self.assertEqual("u1", row["utteranceId"])
+        self.assertEqual("RuntimeError: synthetic TTS failure", row["providerError"])
+
+    def test_failed_cache_event_is_retried_while_valid_audio_is_reused(self) -> None:
+        records = build_alignment([
+            _record("good", positions=[0], start=0, end=1000),
+            _record("missing", text="Câu thiếu.", native="Câu thiếu.", positions=[1], start=1000, end=2000),
+        ])
+        first_calls: list[str] = []
+
+        def first_synthesize(text: str, voice: str, target: Path) -> None:
+            first_calls.append(text)
+            if text == "Xin chào, mình đi nhé.":
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"audio")
+                return
+            raise RuntimeError("transient provider failure")
+
+        fit_audio = lambda raw, fitted, slot_ms, max_tempo: (fitted.write_bytes(raw.read_bytes()) or 500, False)
+        first = run_tts_timing(
+            records, self.output, synthesizer=first_synthesize,
+            measure_duration=lambda path: 500, fit_audio=fit_audio,
+        )
+        self.assertEqual(2, len(first["voiceEvents"]))
+        self.assertEqual("TTS_FAILED", first["voiceEvents"][1]["reviewReason"])
+
+        retry_calls: list[str] = []
+
+        def retry_synthesize(text: str, voice: str, target: Path) -> None:
+            retry_calls.append(text)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"recovered-audio")
+
+        second = run_tts_timing(
+            records, self.output, synthesizer=retry_synthesize,
+            measure_duration=lambda path: 500, fit_audio=fit_audio,
+        )
+        self.assertEqual(1, second["cacheHits"])
+        self.assertEqual(["Câu thiếu."], retry_calls)
+        self.assertEqual(["good", "missing"], [row["utteranceId"] for row in second["voiceEvents"]])
+        self.assertTrue(all(row.get("audioPath") for row in second["voiceEvents"]))
 
     def test_source_uncertain_row_is_not_sent_to_tts(self) -> None:
         calls: list[str] = []

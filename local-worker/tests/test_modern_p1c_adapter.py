@@ -238,6 +238,86 @@ class ModernP1CAdapterTests(unittest.TestCase):
         self.assertEqual("u1", result["timeline"]["voiceEvents"][0]["utteranceId"])
         self.assertEqual(2, result["subtitles"]["maxVisibleLines"])
 
+    def test_failed_tts_event_is_rejected_before_delivery_can_convert_none(self) -> None:
+        profile = resolve_canonical_profile({"localization_profile": "page_goc_tro_bat_on", "target_platform": "tiktok"})
+        identity = {"translator_job_id": "job-1", "handoff_id": "handoff-1"}
+        failed_event = {
+            "utteranceId": "u1",
+            "reviewRequired": True,
+            "reviewReason": "TTS_FAILED",
+            "audioPath": None,
+            "fittedDurationMs": None,
+        }
+        delivery_called = False
+
+        def delivery_stage(records, **kwargs):
+            nonlocal delivery_called
+            delivery_called = True
+            measured = kwargs["voice_events"][0].get("fittedDurationMs", 0)
+            return [{"utteranceId": records[0]["utteranceId"], "ttsMeasuredMs": int(measured)}]
+
+        with self.assertRaisesRegex(ModernP1CAdapterError, "TTS_FAILED.*u1"):
+            run_modern_p1c(
+                Path("source.mp4"), Path("out"), identity, profile,
+                source_stage=lambda *args, **kwargs: [{"utteranceId": "u1"}],
+                localization_stage=lambda records, **kwargs: [{**records[0], "nativeVi": "Thuê nhà", "ttsEligible": True}],
+                tts_stage=lambda *args, **kwargs: {"voiceEvents": [failed_event]},
+                delivery_stage=delivery_stage,
+                timeline_stage=lambda *args, **kwargs: {},
+                subtitle_stage=lambda *args, **kwargs: {},
+            )
+        self.assertFalse(delivery_called)
+
+    def test_success_event_requires_audio_artifact_metadata(self) -> None:
+        profile = resolve_canonical_profile({"localization_profile": "page_goc_tro_bat_on", "target_platform": "tiktok"})
+        identity = {"translator_job_id": "job-1", "handoff_id": "handoff-1"}
+        malformed_success = {
+            "utteranceId": "u1",
+            "reviewRequired": False,
+            "reviewReason": None,
+            "audioPath": "audio/u1.mp3",
+            "fittedDurationMs": None,
+        }
+        with self.assertRaisesRegex(ModernP1CAdapterError, "renderable.*u1"):
+            run_modern_p1c(
+                Path("source.mp4"), Path("out"), identity, profile,
+                source_stage=lambda *args, **kwargs: [{"utteranceId": "u1"}],
+                localization_stage=lambda records, **kwargs: [{**records[0], "nativeVi": "Xin chào", "ttsEligible": True}],
+                tts_stage=lambda *args, **kwargs: {"voiceEvents": [malformed_success]},
+                delivery_stage=lambda *args, **kwargs: [],
+                timeline_stage=lambda *args, **kwargs: {},
+                subtitle_stage=lambda *args, **kwargs: {},
+            )
+
+    def test_valid_tts_events_reach_timeline_once_per_spoken_utterance(self) -> None:
+        profile = resolve_canonical_profile({"localization_profile": "page_goc_tro_bat_on", "target_platform": "tiktok"})
+        identity = {"translator_job_id": "job-1", "handoff_id": "handoff-1"}
+        records = [
+            {"utteranceId": "u1", "nativeVi": "Một", "ttsEligible": True},
+            {"utteranceId": "u2", "nativeVi": "Hai", "ttsEligible": True},
+        ]
+        events = [
+            {"utteranceId": "u1", "audioPath": "audio/u1.mp3", "fittedDurationMs": 100},
+            {"utteranceId": "u2", "audioPath": "audio/u2.mp3", "fittedDurationMs": 200},
+        ]
+        timeline_inputs: list[list[str]] = []
+
+        def timeline_stage(voices, cues, plans, **kwargs):
+            timeline_inputs.append([str(event["utteranceId"]) for event in voices])
+            return {"voiceEvents": voices, "subtitleCues": cues}
+
+        result = run_modern_p1c(
+            Path("source.mp4"), Path("out"), identity, profile,
+            source_stage=lambda *args, **kwargs: records,
+            localization_stage=lambda records, **kwargs: records,
+            tts_stage=lambda *args, **kwargs: {"voiceEvents": events},
+            delivery_stage=lambda records, **kwargs: [{"utteranceId": item["utteranceId"]} for item in records],
+            timeline_stage=timeline_stage,
+            subtitle_stage=lambda cues, **kwargs: {"outputPath": "out.mp4"},
+        )
+        self.assertEqual([["u1", "u2"]], timeline_inputs)
+        self.assertEqual(["u1", "u2"], [event["utteranceId"] for event in result["timeline"]["voiceEvents"]])
+
 
 if __name__ == "__main__":
     unittest.main()

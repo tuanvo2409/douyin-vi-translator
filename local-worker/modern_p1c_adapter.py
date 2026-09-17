@@ -234,7 +234,15 @@ def build_modern_stage_bundle(*, runtime_config: Mapping[str, object]) -> dict[s
     def delivery_stage(records: Sequence[Mapping[str, object]], *, voice_events: Sequence[Mapping[str, object]], **_: object) -> Sequence[Mapping[str, object]]:
         from delivery_planner import plan_delivery
         measured = {str(item["utteranceId"]): item for item in voice_events}
-        enriched = [{**item, "ttsMeasuredMs": int(measured[str(item["utteranceId"])].get("fittedDurationMs", 0))} for item in records]
+        enriched: list[dict[str, object]] = []
+        for item in records:
+            identifier = str(item["utteranceId"])
+            event = measured.get(identifier)
+            if not isinstance(event, Mapping):
+                raise ModernP1CAdapterError(f"modern TTS event is missing for {identifier}")
+            if not _is_renderable_tts_event(event):
+                raise ModernP1CAdapterError(f"modern TTS event is not renderable for {identifier}")
+            enriched.append({**item, "ttsMeasuredMs": int(event["fittedDurationMs"])})
         return list(plan_delivery(enriched)["plans"])
 
     def timeline_stage(voices, cues, plans, **_: object):
@@ -293,6 +301,7 @@ def run_modern_p1c(
     voices = tts.get("voiceEvents")
     if not isinstance(voices, list):
         raise ModernP1CAdapterError("modern TTS stage returned no voiceEvents")
+    _validate_tts_events(localized, voices)
     plans = list(delivery_stage(localized, voice_events=voices, profile=profile, identity=dict(identity)))
     cues = _subtitle_cues(voices)
     timeline = dict(timeline_stage(voices, cues, plans, profile=profile, identity=dict(identity)))
@@ -307,6 +316,56 @@ def run_modern_p1c(
         "subtitles": subtitles,
         "outputPath": subtitles.get("outputPath"),
     }
+
+
+def _is_renderable_tts_event(event: Mapping[str, object]) -> bool:
+    """Return whether an event has success-only audio metadata."""
+
+    duration = event.get("fittedDurationMs")
+    audio_path = event.get("audioPath")
+    return (
+        event.get("reviewReason") != "TTS_FAILED"
+        and isinstance(audio_path, str)
+        and bool(audio_path.strip())
+        and isinstance(duration, int)
+        and not isinstance(duration, bool)
+        and duration > 0
+    )
+
+
+def _validate_tts_events(
+    records: Sequence[Mapping[str, object]], voice_events: Sequence[object]
+) -> None:
+    """Reject failed or malformed TTS events before delivery/timeline planning."""
+
+    by_id: dict[str, Mapping[str, object]] = {}
+    duplicate_ids: set[str] = set()
+    for event in voice_events:
+        if not isinstance(event, Mapping):
+            raise ModernP1CAdapterError("modern TTS event is not an object")
+        identifier = str(event.get("utteranceId") or "")
+        if not identifier or identifier in by_id:
+            duplicate_ids.add(identifier or "<missing>")
+        by_id[identifier] = event
+    if duplicate_ids:
+        raise ModernP1CAdapterError(
+            "modern TTS event identities are duplicated or missing: "
+            + ", ".join(sorted(duplicate_ids))
+        )
+
+    invalid: list[str] = []
+    for record in records:
+        identifier = str(record.get("utteranceId") or "")
+        event = by_id.get(identifier)
+        if event is None:
+            invalid.append(f"MISSING_EVENT for {identifier or '<missing>'}")
+        elif not _is_renderable_tts_event(event):
+            reason = str(event.get("reviewReason") or "INVALID_AUDIO_METADATA")
+            invalid.append(f"{reason} for {identifier or '<missing>'}")
+    if invalid:
+        raise ModernP1CAdapterError(
+            "modern TTS stage produced non-renderable events: " + "; ".join(invalid)
+        )
 
 
 def _subtitle_cues(voice_events: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
