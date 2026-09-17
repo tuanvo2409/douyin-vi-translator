@@ -18,6 +18,41 @@ from modern_p1c_adapter import (
 
 
 class ModernP1CAdapterTests(unittest.TestCase):
+    def test_delivery_uses_fitted_tts_window_without_fake_tempo(self) -> None:
+        stages = build_modern_stage_bundle(
+            runtime_config={"localizationProfile": "page_goc_tro_bat_on"}
+        )
+        records = [{
+            "utteranceId": "u1",
+            "startMs": 0,
+            "endMs": 600,
+            "semanticStartMs": 0,
+            "semanticEndMs": 600,
+            "nativeVi": "Thuê nhà",
+            "deliveryNativeVi": "Thuê nhà",
+            "sourcePositions": [0],
+            "ttsEligible": True,
+        }]
+        voice_events = [{
+            "utteranceId": "u1",
+            "baseStartMs": 0,
+            "baseEndMs": 600,
+            "effectiveStartMs": 0,
+            "effectiveEndMs": 959,
+            "fittedDurationMs": 888,
+            "audioPath": "audio/u1.mp3",
+            "nativeViApproved": "Thuê nhà",
+            "deliveryNativeVi": "Thuê nhà",
+        }]
+
+        plans = stages["delivery"](records, voice_events=voice_events)
+
+        self.assertEqual(1, len(plans))
+        self.assertEqual("BORROW_GAP", plans[0]["action"])
+        self.assertEqual(288, plans[0]["borrowedGapMs"])
+        self.assertEqual(888, plans[0]["effectiveWindowMs"])
+        self.assertEqual(1.0, plans[0]["tempo"])
+
     def test_page_a_text_only_source_uses_local_asr_and_preserves_source_contract(self) -> None:
         stages = build_modern_stage_bundle(
             runtime_config={

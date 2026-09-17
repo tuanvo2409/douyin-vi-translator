@@ -232,7 +232,7 @@ def build_modern_stage_bundle(*, runtime_config: Mapping[str, object]) -> dict[s
         return run_tts_timing(alignment, output_dir, voice=str(runtime_config["voice"]["name"]), synthesizer=capcut_synthesize, measure_duration=lambda p: round(ffprobe_duration(p) * 1000), fit_audio=fit_voice)
 
     def delivery_stage(records: Sequence[Mapping[str, object]], *, voice_events: Sequence[Mapping[str, object]], **_: object) -> Sequence[Mapping[str, object]]:
-        from delivery_planner import plan_delivery
+        from delivery_planner import DeliveryPolicy, plan_delivery
         measured = {str(item["utteranceId"]): item for item in voice_events}
         enriched: list[dict[str, object]] = []
         for item in records:
@@ -242,8 +242,12 @@ def build_modern_stage_bundle(*, runtime_config: Mapping[str, object]) -> dict[s
                 raise ModernP1CAdapterError(f"modern TTS event is missing for {identifier}")
             if not _is_renderable_tts_event(event):
                 raise ModernP1CAdapterError(f"modern TTS event is not renderable for {identifier}")
-            enriched.append({**item, "ttsMeasuredMs": int(event["fittedDurationMs"])})
-        return list(plan_delivery(enriched)["plans"])
+            enriched.append({
+                **item,
+                "ttsMeasuredMs": int(event["fittedDurationMs"]),
+                "nextSpeechStartMs": int(event["effectiveEndMs"]),
+            })
+        return list(plan_delivery(enriched, policy=DeliveryPolicy(max_tempo=1.0))["plans"])
 
     def timeline_stage(voices, cues, plans, **_: object):
         from adaptive_renderer import build_adaptive_timeline
