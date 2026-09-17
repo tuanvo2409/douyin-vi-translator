@@ -75,6 +75,7 @@ class AdaptiveRendererTests(unittest.TestCase):
             [(Path("audio/a.mp3"), 0)], timeline=timeline, width=720, height=960,
         )
         filter_graph = command[command.index("-filter_complex") + 1]
+        self.assertIn("split=1", filter_graph)
         self.assertIn("trim=", filter_graph)
         self.assertIn("setpts=", filter_graph)
         self.assertIn("concat=", filter_graph)

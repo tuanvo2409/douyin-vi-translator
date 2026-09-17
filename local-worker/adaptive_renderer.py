@@ -128,6 +128,8 @@ def build_adaptive_ffmpeg_command(
 
     filters: list[str] = []
     visual_labels: list[str] = []
+    source_labels = [f"[source{index}]" for index in range(len(segments))]
+    filters.append(f"[0:v]split={len(segments)}" + "".join(source_labels))
     for index, raw in enumerate(segments):
         start = _integer(raw, "sourceStartMs") / 1000.0
         end = _integer(raw, "sourceEndMs") / 1000.0
@@ -137,7 +139,7 @@ def build_adaptive_ffmpeg_command(
         label = f"v{index}"
         visual_labels.append(f"[{label}]")
         filters.append(
-            f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=(PTS-STARTPTS)/{float(speed):.6f},"
+            f"{source_labels[index]}trim=start={start:.3f}:end={end:.3f},setpts=(PTS-STARTPTS)/{float(speed):.6f},"
             f"fps=30,scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p[{label}]"
         )
