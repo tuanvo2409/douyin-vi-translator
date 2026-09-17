@@ -1,14 +1,60 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 from canonical_profile import resolve_canonical_profile
-from modern_p1c_adapter import _localization_stage_profile, _presentation_render_config, run_modern_p1c
+from modern_p1c_adapter import (
+    ModernP1CAdapterError,
+    _canonical_av_analysis,
+    _localization_stage_profile,
+    _presentation_render_config,
+    build_modern_stage_bundle,
+    run_modern_p1c,
+)
 
 
 class ModernP1CAdapterTests(unittest.TestCase):
+    def test_source_stage_passes_inner_canonical_av_document_to_reconciliation(self) -> None:
+        inner = {
+            "windowStartMs": 0,
+            "windowEndMs": 1_000,
+            "scene": {"summary": "scene", "tone": "neutral", "register": "spoken"},
+            "utterances": [],
+            "visualOnly": [],
+        }
+        wrapper = {
+            "av_analysis": inner,
+            "reconstructed": {},
+            "diagnostics": {},
+            "providerCalls": [],
+        }
+        stages = build_modern_stage_bundle(runtime_config={"avModel": "gemini-2.5-flash", "ocrDiscoveryFrames": 8})
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch("dubvi_worker.ffprobe_duration", return_value=1.0),
+                patch("dubvi_worker.ffprobe_dimensions", return_value={"width": 720, "height": 1280}),
+                patch("av_analyzer.GeminiAVAnalyzer"),
+                patch("av_analyzer.analyze_media_windows_with_subdivision", return_value=wrapper),
+                patch("auto_roi.sparse_whole_frame_discovery", return_value=[]),
+                patch("localized_masking.build_mask_plan", return_value=None),
+                patch("utterance_builder.build_utterances", return_value=[]),
+            ):
+                records = stages["source"](Path("source.mp4"), Path(directory))
+        self.assertEqual([], records)
+
+    def test_canonical_av_accessor_preserves_inner_identity_and_data(self) -> None:
+        inner = {"windowStartMs": 0, "windowEndMs": 1_000, "utterances": [], "visualOnly": []}
+        self.assertIs(inner, _canonical_av_analysis({"av_analysis": inner}))
+
+    def test_canonical_av_accessor_rejects_missing_or_malformed_inner_document(self) -> None:
+        with self.assertRaisesRegex(ModernP1CAdapterError, "av_analysis"):
+            _canonical_av_analysis({"diagnostics": {}})
+        with self.assertRaisesRegex(ModernP1CAdapterError, "av_analysis"):
+            _canonical_av_analysis({"av_analysis": []})
+
     def test_canonical_page_profiles_choose_explicit_localization_stage_profiles(self) -> None:
         self.assertEqual("vn_native_light_comedy", _localization_stage_profile({"localizationProfile": "page_goc_tro_bat_on"}))
         self.assertEqual("vn_native_light_comedy", _localization_stage_profile({"localizationProfile": "page_giai_cuu_chuong_lon"}))

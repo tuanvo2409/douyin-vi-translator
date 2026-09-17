@@ -12,6 +12,17 @@ class ModernP1CAdapterError(RuntimeError):
     """Modern canonical processing cannot safely continue."""
 
 
+def _canonical_av_analysis(result: object) -> Mapping[str, object]:
+    """Extract the producer's canonical AV document without reshaping it."""
+    if isinstance(result, Mapping):
+        inner = result.get("av_analysis")
+    else:
+        inner = getattr(result, "av_analysis", None)
+    if not isinstance(inner, Mapping):
+        raise ModernP1CAdapterError("AV analysis result has no valid av_analysis document")
+    return inner
+
+
 def _presentation_render_config(profile: CanonicalLocalizationProfile) -> dict[str, object]:
     """Project canonical presentation metadata into the renderer boundary."""
 
@@ -65,7 +76,7 @@ def build_modern_stage_bundle(*, runtime_config: Mapping[str, object]) -> dict[s
             masked_source = output_dir / "masked_source.mkv"
             apply_localized_masks(source, masked_source, mask_plan)
             runtime_paths["render_source"] = masked_source
-        reconstructed = reconcile_source([], analysis)
+        reconstructed = reconcile_source([], _canonical_av_analysis(analysis))
         return build_utterances(reconstructed["dialogue"], [])
 
     def localization_stage(records: Sequence[Mapping[str, object]], **_: object) -> Sequence[Mapping[str, object]]:
