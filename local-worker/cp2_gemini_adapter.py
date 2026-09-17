@@ -55,6 +55,22 @@ def _translation_schema(value_key: str) -> dict[str, object]:
     }
 
 
+def _provider_schema(operation: str) -> dict[str, object]:
+    """Project the strict local schema into Gemini's supported wire schema."""
+
+    schema = deepcopy(OPERATION_SCHEMAS[operation])
+
+    def strip_unsupported(node: object) -> None:
+        if not isinstance(node, dict):
+            return
+        node.pop("additionalProperties", None)
+        for value in node.values():
+            strip_unsupported(value)
+
+    strip_unsupported(schema)
+    return schema
+
+
 SCENE_RESPONSE_SCHEMA = {
     "type": "OBJECT",
     "properties": {
@@ -229,7 +245,7 @@ class CP2GeminiAdapter:
             "generationConfig": {
                 "responseMimeType": "application/json",
                 "temperature": 0.2,
-                "responseSchema": deepcopy(schema),
+                "responseSchema": _provider_schema(operation),
             },
         }
 

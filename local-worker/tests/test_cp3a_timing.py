@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from cue_aligner import build_alignment, write_alignment_artifacts
+from cue_aligner import CueAlignmentError, build_alignment, write_alignment_artifacts
 from tts_timing import run_cp3a, run_tts_timing
 
 
@@ -110,6 +110,12 @@ class CueAlignmentTests(unittest.TestCase):
         self.assertEqual(2, result["coverage"]["alignedUtteranceCount"])
         for row in result["dialogue"]:
             self.assertEqual(row["nativeVi"], " ".join(cue["translatedTextVi"] for cue in row["alignedCues"]))
+
+    def test_alignment_fails_closed_on_missing_or_extra_translation_ids(self) -> None:
+        with self.assertRaises(CueAlignmentError):
+            build_alignment([_record("u1")], accepted=[])
+        with self.assertRaises(CueAlignmentError):
+            build_alignment([_record("u1")], accepted=[_record("extra")])
 
     def test_source_timing_and_positions_remain_authoritative_over_accepted_payload(self) -> None:
         source = _record("u1", positions=[9], start=100, end=900)

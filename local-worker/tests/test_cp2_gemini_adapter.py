@@ -66,11 +66,16 @@ class CP2GeminiAdapterTests(unittest.TestCase):
         bridge, calls = self._adapter([_scene()])
         self.assertEqual(_scene(), bridge({"mode": "scene", "utterances": _records()}))
         request = calls[0]
-        self.assertEqual(
-            cp2_gemini_adapter.OPERATION_SCHEMAS["scene"],
-            request["generationConfig"]["responseSchema"],
-        )
-        self.assertEqual("PASS", cp2_gemini_adapter.validate_schema_parity("scene", request["generationConfig"]["responseSchema"])["status"])
+        self.assertNotIn("additionalProperties", request["generationConfig"]["responseSchema"])
+        self.assertEqual("PASS", cp2_gemini_adapter.validate_schema_parity("scene", cp2_gemini_adapter.OPERATION_SCHEMAS["scene"])["status"])
+
+    @unittest.skipIf(cp2_gemini_adapter is None, "CP2 Gemini adapter is not implemented")
+    def test_provider_schema_omits_google_unsupported_additional_properties_but_canonical_schema_stays_strict(self) -> None:
+        bridge, calls = self._adapter([_scene()])
+        bridge({"mode": "scene", "utterances": _records()})
+        provider_schema = calls[0]["generationConfig"]["responseSchema"]
+        self.assertNotIn("additionalProperties", provider_schema)
+        self.assertTrue(cp2_gemini_adapter.OPERATION_SCHEMAS["scene"]["additionalProperties"] is False)
 
     @unittest.skipIf(cp2_gemini_adapter is None, "CP2 Gemini adapter is not implemented")
     def test_malformed_scene_fails_closed(self) -> None:

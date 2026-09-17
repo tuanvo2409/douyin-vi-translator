@@ -183,6 +183,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual("duck", profile["audioMode"])
         page_a = build_canonical_runtime_config({**self.document, "localization_profile": "page_goc_tro_bat_on"})
         self.assertEqual("BV007_streaming", page_a["voice"]["name"])
+        self.assertEqual("local_asr_text_only", page_a["sourceEvidenceMode"])
         self.assertIn("USER_PRODUCT_DECISION", str(page_a["brandDecision"]))
         result = SimpleNamespace(
             overall_decision=SimpleNamespace(value="review"),

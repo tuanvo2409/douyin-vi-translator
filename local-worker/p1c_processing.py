@@ -173,6 +173,7 @@ def build_canonical_runtime_config(
         "ttsProvider": profile.tts_provider,
         "persona": profile.persona,
         "localizationProfile": profile.profile_id,
+        "sourceEvidenceMode": "local_asr_text_only" if profile.profile_id == "page_goc_tro_bat_on" else "multimodal_av",
         "subtitlePresentation": dict(profile.subtitle_presentation),
         "brandDecision": profile.subtitle_presentation.get("configuration_required_reason"),
         "ocr": {

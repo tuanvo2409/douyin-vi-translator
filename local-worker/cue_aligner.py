@@ -103,7 +103,7 @@ def build_alignment(
         else:
             excluded.append(_diagnostic_row(merged, classification, qa_by_id.get(identifier, [])))
 
-    if accepted_by_id and set(accepted_by_id) != seen_dialogue:
+    if accepted is not None and set(accepted_by_id) != seen_dialogue:
         missing = sorted(set(accepted_by_id) - seen_dialogue)
         extra = sorted(seen_dialogue - set(accepted_by_id))
         raise CueAlignmentError(f"accepted dialogue coverage mismatch: missing={missing}, extra={extra}")

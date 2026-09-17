@@ -48,6 +48,106 @@ def _localization_stage_profile(runtime_config: Mapping[str, object]) -> str:
     return _LOCALIZATION_STAGE_PROFILES[profile_id]
 
 
+def _local_asr_source(
+    source: Path,
+    output_dir: Path,
+    runtime_config: Mapping[str, object],
+    state: dict[str, object],
+    runtime_paths: dict[str, Path],
+) -> Sequence[Mapping[str, object]]:
+    """Build canonical source rows from local ASR without entering the AV boundary."""
+
+    import json
+    import os
+
+    from dubvi_worker import extract_audio, ffprobe_duration, transcribe
+    from source_reconciler import assign_canonical_utterance_ids
+
+    duration = round(ffprobe_duration(source) * 1000)
+    state["sourceDurationMs"] = duration
+    runtime_paths.update(source=source, output_dir=output_dir, render_source=source)
+    audio = output_dir / "source.wav"
+    extract_audio(source, audio)
+    model = str(runtime_config.get("whisperModel") or os.environ.get("DUBVI_WHISPER_MODEL") or "small")
+    device = str(os.environ.get("DUBVI_DEVICE") or "cpu")
+    rows = list(transcribe(audio, model, device))
+    if not rows:
+        raise ModernP1CAdapterError("local ASR produced no source utterances")
+    min_confidence = int((runtime_config.get("ocr") or {}).get("minConfidence", 65))
+    cues: list[dict[str, object]] = []
+    records: list[dict[str, object]] = []
+    for index, row in enumerate(rows):
+        position = row.get("position", index)
+        start_ms = row.get("startMs")
+        end_ms = row.get("endMs")
+        text = str(row.get("asrTextZh") or "").strip()
+        confidence = int(row.get("confidence", 0))
+        if not isinstance(position, int) or isinstance(position, bool):
+            raise ModernP1CAdapterError("local ASR source position is invalid")
+        if not isinstance(start_ms, int) or isinstance(start_ms, bool) or not isinstance(end_ms, int) or isinstance(end_ms, bool) or end_ms <= start_ms:
+            raise ModernP1CAdapterError("local ASR source timing is invalid")
+        if not text:
+            continue
+        cue_id = f"asr-{position}"
+        high_confidence = confidence >= min_confidence
+        flags = [] if high_confidence else ["SOURCE_UNCERTAIN"]
+        cues.append({
+            "cue_id": cue_id,
+            "position": position,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "asr_text_zh": text,
+            "ocr_text_zh": "",
+            "needs_review": not high_confidence,
+        })
+        classification = "RESOLVED_DIALOGUE" if high_confidence else "UNRESOLVED_DIALOGUE"
+        records.append({
+            "startMs": start_ms,
+            "endMs": end_ms,
+            "spokenZh": text,
+            "subtitleZh": "",
+            "resolvedZh": text,
+            "confidence": "HIGH" if high_confidence else "LOW",
+            "source_confidence": "high" if high_confidence else "low",
+            "positions": [position],
+            "cue_ids": [cue_id],
+            "evidence": {"asr": text, "ocr": "", "avSpoken": "", "avSubtitle": ""},
+            "decision": "LOCAL_ASR",
+            "flags": flags,
+            "source_flags": flags,
+            "kind": "dialogue",
+            "type": "DIALOGUE" if high_confidence else classification,
+            "classification": classification,
+        })
+    if not records:
+        raise ModernP1CAdapterError("local ASR produced no usable source utterances")
+    canonical = assign_canonical_utterance_ids(records)
+    state["sourceCues"] = cues
+    state["sourceEvidenceMode"] = "local_asr_text_only"
+    (output_dir / "source_evidence.json").write_text(
+        json.dumps({"schemaVersion": 1, "mode": "local_asr_text_only", "durationMs": duration, "cues": cues, "records": canonical}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    # OCR remains local and is used only for visual masking. Its absence never
+    # invents dialogue or blocks the speech demo.
+    try:
+        from auto_roi import sparse_whole_frame_discovery
+        from dubvi_worker import ffprobe_dimensions
+        from localized_masking import apply_localized_masks, build_mask_plan
+
+        detections = sparse_whole_frame_discovery(source, int((runtime_config.get("ocr") or {}).get("discoveryFrames", 8)))
+        mask_plan = build_mask_plan(detections, ffprobe_dimensions(source)) if detections else []
+        if mask_plan:
+            masked_source = output_dir / "masked_source.mkv"
+            apply_localized_masks(source, masked_source, mask_plan)
+            runtime_paths["render_source"] = masked_source
+        state["localOcrDetections"] = len(detections)
+    except Exception:
+        state["localOcrDetections"] = 0
+    return canonical
+
+
 def build_modern_stage_bundle(*, runtime_config: Mapping[str, object]) -> dict[str, Callable[..., object]]:
     """Construct the child-owned media graph; providers are resolved at runtime."""
     if not isinstance(runtime_config, Mapping):
@@ -56,12 +156,14 @@ def build_modern_stage_bundle(*, runtime_config: Mapping[str, object]) -> dict[s
     runtime_paths: dict[str, Path] = {}
 
     def source_stage(source: Path, output_dir: Path, **_: object) -> Sequence[Mapping[str, object]]:
-        from av_analyzer import GeminiAVAnalyzer, analyze_media_windows_with_subdivision
-        from auto_roi import sparse_whole_frame_discovery
         from dubvi_worker import ffprobe_dimensions, ffprobe_duration
         from localized_masking import apply_localized_masks, build_mask_plan
         from source_reconciler import reconcile_source
         from utterance_builder import build_utterances
+        if runtime_config.get("sourceEvidenceMode") == "local_asr_text_only":
+            return _local_asr_source(source, output_dir, runtime_config, state, runtime_paths)
+        from av_analyzer import GeminiAVAnalyzer, analyze_media_windows_with_subdivision
+        from auto_roi import sparse_whole_frame_discovery
         duration = round(ffprobe_duration(source) * 1000)
         state["sourceDurationMs"] = duration
         runtime_paths.update(source=source, output_dir=output_dir)
@@ -80,19 +182,50 @@ def build_modern_stage_bundle(*, runtime_config: Mapping[str, object]) -> dict[s
         return build_utterances(reconstructed["dialogue"], [])
 
     def localization_stage(records: Sequence[Mapping[str, object]], **_: object) -> Sequence[Mapping[str, object]]:
+        from cue_aligner import build_alignment, write_alignment_artifacts
         from cp2_gemini_adapter import live_cp2_gemini_adapter
         from scene_memory import build_scene_memory, build_terminology_evidence
         from vn_localizer import localize
         memory = build_scene_memory({"terminologyEvidence": build_terminology_evidence(records), "summary": "", "tone": "", "register": ""})
         adapter = live_cp2_gemini_adapter(model=str(runtime_config.get("localizationModel", "gemini-2.5-flash")))
         profile_name = _localization_stage_profile(runtime_config)
-        localized = localize(records, scene_memory=memory, request=adapter, profile=profile_name)
-        return [{**item, "semanticStartMs": int(item["startMs"]), "semanticEndMs": int(item["endMs"]), "approvedNativeVi": item["nativeVi"], "deliveryNativeVi": item["nativeVi"], "sourcePositions": list(item.get("positions") or [])} for item in localized["accepted"]]
+        text_only_records = [
+            {
+                "utteranceId": str(item["utteranceId"]),
+                "resolvedZh": str(item.get("resolvedZh") or ""),
+                "source_confidence": str(item.get("source_confidence") or ""),
+                "kind": str(item.get("kind") or "dialogue"),
+            }
+            for item in records
+        ]
+        localized = localize(text_only_records, scene_memory=memory, request=adapter, profile=profile_name)
+        alignment = build_alignment(
+            records,
+            accepted=localized["accepted"],
+            review_required=localized["review_required"],
+            source_cues=state.get("sourceCues"),
+        )
+        write_alignment_artifacts(alignment, runtime_paths["output_dir"])
+        state["alignment"] = alignment
+        return [
+            {
+                **item,
+                "semanticStartMs": int(item["startMs"]),
+                "semanticEndMs": int(item["endMs"]),
+                "approvedNativeVi": item["nativeVi"],
+                "deliveryNativeVi": item["nativeVi"],
+                "sourcePositions": list(item.get("sourcePositions") or []),
+            }
+            for item in alignment["dialogue"]
+        ]
 
     def tts_stage(records: Sequence[Mapping[str, object]], output_dir: Path, **_: object) -> Mapping[str, object]:
         from dubvi_worker import capcut_synthesize, fit_voice, ffprobe_duration
         from tts_timing import run_tts_timing
-        alignment = {"dialogue": [dict(item, ttsEligible=True) for item in records], "excluded": []}
+        alignment = {
+            "dialogue": [dict(item) for item in records],
+            "excluded": list((state.get("alignment") or {}).get("excluded", [])) if isinstance(state.get("alignment"), Mapping) else [],
+        }
         return run_tts_timing(alignment, output_dir, voice=str(runtime_config["voice"]["name"]), synthesizer=capcut_synthesize, measure_duration=lambda p: round(ffprobe_duration(p) * 1000), fit_audio=fit_voice)
 
     def delivery_stage(records: Sequence[Mapping[str, object]], *, voice_events: Sequence[Mapping[str, object]], **_: object) -> Sequence[Mapping[str, object]]:

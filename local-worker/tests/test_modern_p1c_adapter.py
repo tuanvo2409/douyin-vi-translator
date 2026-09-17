@@ -17,6 +17,87 @@ from modern_p1c_adapter import (
 
 
 class ModernP1CAdapterTests(unittest.TestCase):
+    def test_page_a_text_only_source_uses_local_asr_and_preserves_source_contract(self) -> None:
+        stages = build_modern_stage_bundle(
+            runtime_config={
+                "localizationProfile": "page_goc_tro_bat_on",
+                "sourceEvidenceMode": "local_asr_text_only",
+                "ocr": {"discoveryFrames": 0},
+            }
+        )
+        asr_rows = [
+            {"position": 0, "startMs": 120, "endMs": 860, "asrTextZh": "第一句", "confidence": 87},
+            {"position": 1, "startMs": 920, "endMs": 1_700, "asrTextZh": "第二句", "confidence": 87},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            with (
+                patch("dubvi_worker.ffprobe_duration", return_value=2.0),
+                patch("dubvi_worker.ffprobe_dimensions", return_value=(720, 1280)),
+                patch("dubvi_worker.extract_audio") as extract_audio,
+                patch("dubvi_worker.transcribe", return_value=asr_rows),
+                patch("auto_roi.sparse_whole_frame_discovery", return_value=[]),
+                patch("localized_masking.build_mask_plan", return_value=[]),
+                patch("av_analyzer.GeminiAVAnalyzer") as av_provider,
+                patch("av_analyzer.analyze_media_windows_with_subdivision") as av_call,
+                patch("groq_vision.GroqVisionAnalyzer") as groq_provider,
+            ):
+                records = list(stages["source"](Path("source.mp4"), output))
+
+        extract_audio.assert_called_once()
+        av_provider.assert_not_called()
+        av_call.assert_not_called()
+        groq_provider.assert_not_called()
+        self.assertEqual([120, 920], [row["startMs"] for row in records])
+        self.assertEqual([860, 1_700], [row["endMs"] for row in records])
+        self.assertEqual([[0], [1]], [row["positions"] for row in records])
+        self.assertEqual(["第一句", "第二句"], [row["resolvedZh"] for row in records])
+        self.assertEqual(2, len({row["utteranceId"] for row in records}))
+        self.assertTrue(all(row["classification"] == "RESOLVED_DIALOGUE" for row in records))
+
+    def test_text_translation_boundary_receives_ids_and_source_text_only(self) -> None:
+        stages = build_modern_stage_bundle(
+            runtime_config={"localizationProfile": "page_goc_tro_bat_on", "sourceEvidenceMode": "local_asr_text_only"}
+        )
+        records = [
+            {
+                "utteranceId": "u1",
+                "startMs": 100,
+                "endMs": 900,
+                "resolvedZh": "租房",
+                "source_confidence": "high",
+                "kind": "dialogue",
+                "positions": [4],
+            }
+        ]
+        payloads = []
+        source_id = ""
+
+        def request(payload):
+            payloads.append(payload)
+            key = "semanticVi" if payload["mode"] == "semantic" else "nativeVi"
+            return {"translations": [{"utteranceId": source_id, key: "Thuê nhà"}]}
+
+        with tempfile.TemporaryDirectory() as directory, patch("cp2_gemini_adapter.live_cp2_gemini_adapter", return_value=request):
+            with (
+                patch("dubvi_worker.ffprobe_duration", return_value=2.0),
+                patch("dubvi_worker.extract_audio"),
+                patch("dubvi_worker.transcribe", return_value=[{"position": 4, "startMs": 100, "endMs": 900, "asrTextZh": "租房", "confidence": 87}]),
+                patch("auto_roi.sparse_whole_frame_discovery", return_value=[]),
+            ):
+                source_records = list(stages["source"](Path("source.mp4"), Path(directory)))
+            source_id = str(source_records[0]["utteranceId"])
+            stages["localization"](source_records, output_dir=Path(directory))
+
+        self.assertEqual(2, len(payloads))
+        for payload in payloads:
+            self.assertTrue({"utteranceId", "resolvedZh", "source_confidence", "kind"} <= set(payload["utterances"][0]))
+            self.assertNotIn("startMs", payload["utterances"][0])
+            self.assertNotIn("endMs", payload["utterances"][0])
+            self.assertNotIn("positions", payload["utterances"][0])
+            self.assertEqual(source_id, payload["utterances"][0]["utteranceId"])
+            self.assertEqual("租房", payload["utterances"][0]["resolvedZh"])
+
     def test_source_stage_passes_inner_canonical_av_document_to_reconciliation(self) -> None:
         inner = {
             "windowStartMs": 0,
