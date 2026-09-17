@@ -3,9 +3,10 @@ from __future__ import annotations
 import unittest
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from canonical_profile import resolve_canonical_profile
+from llm_transport import ProviderError
 from modern_p1c_adapter import (
     ModernP1CAdapterError,
     _canonical_av_analysis,
@@ -97,6 +98,34 @@ class ModernP1CAdapterTests(unittest.TestCase):
             self.assertNotIn("positions", payload["utterances"][0])
             self.assertEqual(source_id, payload["utterances"][0]["utteranceId"])
             self.assertEqual("租房", payload["utterances"][0]["resolvedZh"])
+
+    def test_page_a_localization_uses_groq_text_after_gemini_quota_failure(self) -> None:
+        stages = build_modern_stage_bundle(
+            runtime_config={"localizationProfile": "page_goc_tro_bat_on", "sourceEvidenceMode": "local_asr_text_only"}
+        )
+        gemini = Mock(side_effect=ProviderError("HTTP_429", transient=True, http_status=429))
+        groq = Mock(side_effect=lambda payload: {
+            "translations": [
+                {"utteranceId": item["utteranceId"], ("semanticVi" if payload["mode"] == "semantic" else "nativeVi"): "Thuê nhà"}
+                for item in payload["utterances"]
+            ]
+        })
+        with tempfile.TemporaryDirectory() as directory, patch("cp2_gemini_adapter.live_cp2_gemini_adapter", return_value=gemini), patch("text_translation_fallback.GroqTextTranslationAdapter", return_value=groq):
+            with (
+                patch("dubvi_worker.ffprobe_duration", return_value=2.0),
+                patch("dubvi_worker.extract_audio"),
+                patch("dubvi_worker.transcribe", return_value=[{"position": 4, "startMs": 100, "endMs": 900, "asrTextZh": "租房", "confidence": 87}]),
+                patch("auto_roi.sparse_whole_frame_discovery", return_value=[]),
+            ):
+                source_records = list(stages["source"](Path("source.mp4"), Path(directory)))
+            try:
+                localized = stages["localization"](source_records, output_dir=Path(directory))
+            except ProviderError:
+                localized = None
+
+        self.assertIsNotNone(localized)
+        self.assertEqual(2, groq.call_count)
+        self.assertEqual("Thuê nhà", localized[0]["nativeVi"])
 
     def test_source_stage_passes_inner_canonical_av_document_to_reconciliation(self) -> None:
         inner = {

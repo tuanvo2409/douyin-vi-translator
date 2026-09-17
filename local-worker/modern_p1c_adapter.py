@@ -185,9 +185,11 @@ def build_modern_stage_bundle(*, runtime_config: Mapping[str, object]) -> dict[s
         from cue_aligner import build_alignment, write_alignment_artifacts
         from cp2_gemini_adapter import live_cp2_gemini_adapter
         from scene_memory import build_scene_memory, build_terminology_evidence
+        from text_translation_fallback import GeminiPrimaryWithGroqTextFallback, GroqTextTranslationAdapter
         from vn_localizer import localize
         memory = build_scene_memory({"terminologyEvidence": build_terminology_evidence(records), "summary": "", "tone": "", "register": ""})
-        adapter = live_cp2_gemini_adapter(model=str(runtime_config.get("localizationModel", "gemini-2.5-flash")))
+        gemini = live_cp2_gemini_adapter(model=str(runtime_config.get("localizationModel", "gemini-2.5-flash")))
+        adapter = GeminiPrimaryWithGroqTextFallback(gemini, GroqTextTranslationAdapter())
         profile_name = _localization_stage_profile(runtime_config)
         text_only_records = [
             {
@@ -199,6 +201,7 @@ def build_modern_stage_bundle(*, runtime_config: Mapping[str, object]) -> dict[s
             for item in records
         ]
         localized = localize(text_only_records, scene_memory=memory, request=adapter, profile=profile_name)
+        state["translationProviderPath"] = adapter.last_provider
         alignment = build_alignment(
             records,
             accepted=localized["accepted"],
