@@ -39,6 +39,16 @@ _RECOVERY_KEYS = (
     "coordinateNormalizationApplied",
     "boundaryNormalizationApplied",
     "repairRetryUsed",
+    "fallbackInvoked",
+    "fallbackProvider",
+    "fallbackModel",
+    "fallbackFrameCount",
+    "fallbackTranscriptContextUsed",
+    "fallbackSchemaValidationStatus",
+    "fallbackFailureClass",
+    "fallbackTransportAttempts",
+    "rateLimitClassification",
+    "rateLimitMetadata",
     "finalStatus",
 )
 
@@ -531,6 +541,8 @@ def _transport_count(recovery: Mapping[str, object]) -> int:
 
 def _valid_window_status(prefix: str, recovery: Mapping[str, object]) -> str:
     final_status = recovery.get("finalStatus")
+    if final_status == "AV_SCHEMA_VALID_GROQ_FALLBACK":
+        return prefix + "_SCHEMA_VALID_GROQ_FALLBACK"
     if final_status == "AV_SCHEMA_VALID_FIRST_PASS":
         return prefix + "_SCHEMA_VALID_FIRST_PASS"
     if final_status == "AV_SCHEMA_VALID_AFTER_NORMALIZATION":
@@ -598,6 +610,9 @@ def persist_subdivision_diagnostics(path: Path, document: Mapping[str, object]) 
                     "transientRetryUsed", "schemaValidationStatus",
                     "repairGenerationUsed", "status", "finalStatus", "failureClass",
                     "coordinateNormalizationApplied", "boundaryNormalizationApplied",
+                    "fallbackInvoked", "fallbackProvider", "fallbackModel", "fallbackFrameCount",
+                    "fallbackTranscriptContextUsed", "fallbackSchemaValidationStatus", "fallbackFailureClass",
+                    "fallbackTransportAttempts", "rateLimitClassification", "rateLimitMetadata",
                 )
             })
         safe_windows.append({
@@ -607,7 +622,9 @@ def persist_subdivision_diagnostics(path: Path, document: Mapping[str, object]) 
                 "attemptCount", "logicalAttemptCount", "transportAttempts", "totalTransportAttempts", "httpStatus",
                 "finalTransportStatus", "transientRetryUsed", "schemaValidationStatus",
                 "repairGenerationUsed", "status", "finalStatus", "failureClass",
-                "boundaryNormalizationApplied",
+                "boundaryNormalizationApplied", "fallbackInvoked", "fallbackProvider", "fallbackModel",
+                "fallbackFrameCount", "fallbackTranscriptContextUsed", "fallbackSchemaValidationStatus",
+                "fallbackFailureClass", "fallbackTransportAttempts", "rateLimitClassification", "rateLimitMetadata",
             )
         } | {"children": safe_children})
     safe = {
@@ -627,10 +644,73 @@ def persist_subdivision_diagnostics(path: Path, document: Mapping[str, object]) 
 
 
 class GeminiAVAnalyzer:
-    def __init__(self, transport: StructuredGeminiTransport | None = None, *, model: str | None = None) -> None:
+    def __init__(
+        self,
+        transport: StructuredGeminiTransport | None = None,
+        *,
+        model: str | None = None,
+        groq_transport: object | None = None,
+        groq_frame_extractor: Callable[[Path, int], bytes] | None = None,
+    ) -> None:
         self.model = model or os.environ.get("DUBVI_AV_MODEL", "gemini-2.5-flash")
         self.transport = transport or gemini_json_transport(model=self.model)
+        self.groq_transport = groq_transport
+        self.groq_frame_extractor = groq_frame_extractor
+        self.groq_analyzer = None
         self.last_recovery: dict[str, object] = {}
+
+    @staticmethod
+    def _groq_fallback_allowed(error: ProviderError) -> bool:
+        if error.transient or error.http_status in {429, 500, 502, 503, 504}:
+            return True
+        return error.classification in {
+            "NO_READY_GEMINI_KEY",
+            "RESOURCE_EXHAUSTED",
+            "PROVIDER_UNAVAILABLE",
+        }
+
+    def _run_groq_fallback(
+        self,
+        media_path: Path,
+        *,
+        start_ms: int,
+        end_ms: int,
+        cues: Sequence[Mapping[str, object]],
+        unresolved: Mapping[str, object] | None,
+    ) -> dict[str, object]:
+        from groq_vision import GroqVisionAnalyzer
+
+        self.groq_analyzer = GroqVisionAnalyzer(
+            transport=self.groq_transport,
+            frame_extractor=self.groq_frame_extractor,
+        )
+        result = self.groq_analyzer.analyze_media(
+            media_path,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            cues=cues,
+            unresolved=unresolved,
+        )
+        recovery = self.groq_analyzer.last_recovery
+        groq_attempts = recovery.get("transportAttempts", 1)
+        self.last_recovery.update({
+            "fallbackInvoked": True,
+            "fallbackProvider": "groq",
+            "fallbackModel": recovery.get("model"),
+            "fallbackFrameCount": recovery.get("frameCount", 0),
+            "fallbackTranscriptContextUsed": bool(recovery.get("transcriptContextUsed", False)),
+            "fallbackSchemaValidationStatus": recovery.get("schemaValidationStatus", "NOT_RUN"),
+            "fallbackTransportAttempts": groq_attempts,
+            "totalTransportAttempts": int(self.last_recovery.get("totalTransportAttempts", 0)) + (
+                groq_attempts if _is_int(groq_attempts) else 0
+            ),
+            "schemaValidationStatus": recovery.get("schemaValidationStatus", "NOT_RUN"),
+            "normalizationApplied": bool(recovery.get("normalizationApplied", False)),
+            "coordinateNormalizationApplied": bool(recovery.get("coordinateNormalizationApplied", False)),
+            "boundaryNormalizationApplied": bool(recovery.get("boundaryNormalizationApplied", False)),
+            "finalStatus": recovery.get("finalStatus", "AV_SCHEMA_VALID_GROQ_FALLBACK"),
+        })
+        return result
 
     def _payload(self, media: bytes, start_ms: int, end_ms: int, *, repair: bool) -> dict[str, object]:
         window_instruction = (
@@ -672,6 +752,8 @@ class GeminiAVAnalyzer:
         *,
         start_ms: int = 0,
         end_ms: int | None = None,
+        cues: Sequence[Mapping[str, object]] = (),
+        unresolved: Mapping[str, object] | None = None,
         recovery_metadata_path: Path | None = None,
     ) -> dict[str, object]:
         if end_ms is None or end_ms - start_ms > MAX_WINDOW_MS:
@@ -694,6 +776,16 @@ class GeminiAVAnalyzer:
             "coordinateNormalizationApplied": False,
             "boundaryNormalizationApplied": False,
             "repairRetryUsed": False,
+            "fallbackInvoked": False,
+            "fallbackProvider": None,
+            "fallbackModel": None,
+            "fallbackFrameCount": 0,
+            "fallbackTranscriptContextUsed": False,
+            "fallbackSchemaValidationStatus": "NOT_RUN",
+            "fallbackFailureClass": None,
+            "fallbackTransportAttempts": 0,
+            "rateLimitClassification": None,
+            "rateLimitMetadata": {},
             "finalStatus": "RUNNING",
         }
         try:
@@ -721,6 +813,24 @@ class GeminiAVAnalyzer:
                         if error.transient
                         else "AV_PROVIDER_ERROR"
                     )
+                    if self._groq_fallback_allowed(error) and (
+                        self.groq_transport is not None or bool(os.environ.get("GROQ_API_KEY"))
+                    ):
+                        try:
+                            return self._run_groq_fallback(
+                                media_path,
+                                start_ms=start_ms,
+                                end_ms=end_ms,
+                                cues=cues,
+                                unresolved=unresolved,
+                            )
+                        except ProviderError as fallback_error:
+                            fallback_recovery = dict(getattr(self.groq_analyzer, "last_recovery", {}))
+                            self.last_recovery["fallbackFailureClass"] = fallback_error.classification
+                            self.last_recovery["rateLimitClassification"] = fallback_recovery.get("rateLimitClassification")
+                            self.last_recovery["rateLimitMetadata"] = dict(fallback_recovery.get("rateLimitMetadata") or {})
+                            self.last_recovery["finalStatus"] = "AV_FALLBACK_PROVIDER_ERROR"
+                            raise
                     raise
                 except StructuredResponseError as error:
                     self.last_recovery["failureClass"] = "PROVIDER_RESPONSE_ENVELOPE_INVALID"
@@ -886,7 +996,13 @@ def analyze_media_windows_with_subdivision(
             "children": [],
         }
         try:
-            document = analyzer.analyze_media(media_path, start_ms=parent_start, end_ms=parent_end)
+            document = analyzer.analyze_media(
+                media_path,
+                start_ms=parent_start,
+                end_ms=parent_end,
+                cues=cues,
+                unresolved=unresolved,
+            )
         except ProviderError as error:
             recovery = dict(analyzer.last_recovery)
             logical_count, transport_count = record_accounting(recovery)
@@ -902,6 +1018,8 @@ def analyze_media_windows_with_subdivision(
                 "boundaryNormalizationApplied": bool(recovery.get("boundaryNormalizationApplied", False)),
                 "finalStatus": recovery.get("finalStatus"),
                 "failureClass": error.classification,
+                "rateLimitClassification": recovery.get("rateLimitClassification"),
+                "rateLimitMetadata": dict(recovery.get("rateLimitMetadata") or {}),
                 "status": "AV_PARENT_PROVIDER_ERROR",
             })
             diagnostics.append(entry)
@@ -958,6 +1076,8 @@ def analyze_media_windows_with_subdivision(
                         media_path,
                         start_ms=child_start,
                         end_ms=child_end,
+                        cues=cues,
+                        unresolved=unresolved,
                     )
                 except ProviderError as child_error:
                     recovery = dict(analyzer.last_recovery)
@@ -973,6 +1093,8 @@ def analyze_media_windows_with_subdivision(
                         "repairGenerationUsed": bool(recovery.get("repairGenerationUsed", False)),
                         "finalStatus": recovery.get("finalStatus"),
                         "failureClass": child_error.classification,
+                        "rateLimitClassification": recovery.get("rateLimitClassification"),
+                        "rateLimitMetadata": dict(recovery.get("rateLimitMetadata") or {}),
                         "status": "AV_CHILD_PROVIDER_ERROR",
                     })
                     children.append(child)
@@ -1013,10 +1135,18 @@ def analyze_media_windows_with_subdivision(
                         "transientRetryUsed": bool(recovery.get("transientRetryUsed", False)),
                         "schemaValidationStatus": recovery.get("schemaValidationStatus", "VALID"),
                         "repairGenerationUsed": bool(recovery.get("repairGenerationUsed", False)),
-                        "finalStatus": recovery.get("finalStatus"),
-                        "coordinateNormalizationApplied": bool(recovery.get("coordinateNormalizationApplied")),
-                        "boundaryNormalizationApplied": bool(recovery.get("boundaryNormalizationApplied")),
-                        "status": _valid_window_status("AV_CHILD", recovery),
+                "finalStatus": recovery.get("finalStatus"),
+                "coordinateNormalizationApplied": bool(recovery.get("coordinateNormalizationApplied")),
+                "boundaryNormalizationApplied": bool(recovery.get("boundaryNormalizationApplied")),
+                "fallbackInvoked": bool(recovery.get("fallbackInvoked", False)),
+                "fallbackProvider": recovery.get("fallbackProvider"),
+                "fallbackModel": recovery.get("fallbackModel"),
+                "fallbackFrameCount": recovery.get("fallbackFrameCount", 0),
+                "fallbackTranscriptContextUsed": bool(recovery.get("fallbackTranscriptContextUsed", False)),
+                "fallbackSchemaValidationStatus": recovery.get("fallbackSchemaValidationStatus", "NOT_RUN"),
+                "fallbackFailureClass": recovery.get("fallbackFailureClass"),
+                "fallbackTransportAttempts": recovery.get("fallbackTransportAttempts", 0),
+                "status": _valid_window_status("AV_CHILD", recovery),
                     })
                     children.append(child)
                     documents.append(child_document)
@@ -1036,6 +1166,14 @@ def analyze_media_windows_with_subdivision(
                 "finalStatus": recovery.get("finalStatus"),
                 "coordinateNormalizationApplied": bool(recovery.get("coordinateNormalizationApplied")),
                 "boundaryNormalizationApplied": bool(recovery.get("boundaryNormalizationApplied")),
+                "fallbackInvoked": bool(recovery.get("fallbackInvoked", False)),
+                "fallbackProvider": recovery.get("fallbackProvider"),
+                "fallbackModel": recovery.get("fallbackModel"),
+                "fallbackFrameCount": recovery.get("fallbackFrameCount", 0),
+                "fallbackTranscriptContextUsed": bool(recovery.get("fallbackTranscriptContextUsed", False)),
+                "fallbackSchemaValidationStatus": recovery.get("fallbackSchemaValidationStatus", "NOT_RUN"),
+                "fallbackFailureClass": recovery.get("fallbackFailureClass"),
+                "fallbackTransportAttempts": recovery.get("fallbackTransportAttempts", 0),
                 "status": _valid_window_status("AV_PRIMARY", recovery),
             })
             documents.append(document)

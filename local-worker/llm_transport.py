@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import time
 from typing import Any, Callable, Mapping
 
@@ -36,6 +37,8 @@ class ProviderError(RuntimeError):
         self.retry_after = retry_after
         self.transport_attempts = 0
         self.transient_retry_used = False
+        self.rate_limit_metadata: dict[str, str] = {}
+        self.rate_limit_classification: str | None = None
 
 
 class StructuredResponseError(ValueError):
@@ -113,6 +116,9 @@ class StructuredGeminiTransport:
                         "finalTransportStatus": error.classification,
                         "transientRetryUsed": error.transient_retry_used,
                     }
+                    if error.http_status == 429:
+                        self.last_call["rateLimitMetadata"] = dict(error.rate_limit_metadata)
+                        self.last_call["rateLimitClassification"] = error.rate_limit_classification
                     raise
                 self._sleeper(self._delay_calculator(attempt + 1, error))
             except requests.RequestException as cause:
@@ -157,6 +163,53 @@ def _retry_after_seconds(response: object) -> float | None:
     return value if math.isfinite(value) and value >= 0 else None
 
 
+_RATE_LIMIT_HEADERS = {
+    "retry-after",
+    "x-ratelimit-limit-requests",
+    "x-ratelimit-limit-tokens",
+    "x-ratelimit-remaining-requests",
+    "x-ratelimit-remaining-tokens",
+    "x-ratelimit-reset-requests",
+    "x-ratelimit-reset-tokens",
+}
+
+
+def _safe_rate_limit_metadata(response: object) -> dict[str, str]:
+    headers = getattr(response, "headers", None)
+    if headers is None or not hasattr(headers, "items"):
+        return {}
+    return {
+        str(name).lower(): str(value)[:128]
+        for name, value in headers.items()
+        if str(name).lower() in _RATE_LIMIT_HEADERS
+    }
+
+
+def _remaining_is_zero(value: object) -> bool:
+    try:
+        return int(str(value).strip()) <= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _reset_seconds(value: object) -> float | None:
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)(ms|s|m|h|d)?\s*", str(value))
+    if match is None:
+        return None
+    amount = float(match.group(1))
+    unit = match.group(2) or "s"
+    return amount * {"ms": 0.001, "s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+
+
+def classify_rate_limit_429(metadata: Mapping[str, str]) -> str:
+    if _remaining_is_zero(metadata.get("x-ratelimit-remaining-tokens")):
+        return "TPM_LIMIT"
+    if _remaining_is_zero(metadata.get("x-ratelimit-remaining-requests")):
+        reset = _reset_seconds(metadata.get("x-ratelimit-reset-requests"))
+        return "RPD_LIMIT" if reset is not None and reset >= 3600 else "RPM_LIMIT"
+    return "OTHER_PROVIDER_429" if metadata else "UNKNOWN_429"
+
+
 def gemini_json_transport(
     *,
     model: str,
@@ -197,6 +250,56 @@ def gemini_json_transport(
                 return text
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise StructuredResponseError("provider structured response is invalid") from error
+
+    return StructuredGeminiTransport(
+        request=request,
+        max_transport_attempts=max_transport_attempts,
+        sleeper=sleeper,
+        delay_calculator=delay_calculator,
+    )
+
+
+def groq_json_transport(
+    *,
+    model: str,
+    api_key: str | None = None,
+    max_transport_attempts: int = 1,
+    sleeper: Callable[[float], None] = time.sleep,
+    delay_calculator: Callable[[int, ProviderError], float] | None = None,
+) -> StructuredGeminiTransport:
+    """Build the OpenAI-compatible Groq JSON adapter without logging credentials."""
+    def request(payload: Mapping[str, object]) -> object:
+        key = api_key or os.environ.get("GROQ_API_KEY")
+        if not key:
+            raise ProviderError("GROQ_API_KEY_MISSING")
+        try:
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+                json=dict(payload),
+                timeout=60,
+            )
+        except requests.RequestException as error:
+            raise ProviderError("GROQ_PROVIDER_UNAVAILABLE", transient=True) from error
+        if response.status_code != 200:
+            error = ProviderError(
+                "HTTP_" + str(response.status_code),
+                transient=is_transient_http_status(response.status_code),
+                http_status=response.status_code,
+                retry_after=_retry_after_seconds(response),
+            )
+            if response.status_code == 429:
+                error.rate_limit_metadata = _safe_rate_limit_metadata(response)
+                error.rate_limit_classification = classify_rate_limit_429(error.rate_limit_metadata)
+            raise error
+        try:
+            text = response.json()["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise StructuredResponseError("provider structured response is invalid") from error
+        try:
+            return json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return text
 
     return StructuredGeminiTransport(
         request=request,
