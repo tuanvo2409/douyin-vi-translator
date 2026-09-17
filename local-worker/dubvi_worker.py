@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -515,6 +516,11 @@ async def edge_synthesize(text: str, voice: str, target: Path) -> None:
     raise RuntimeError("TTS Edge không tạo được audio sau 3 lần thử. Kiểm tra Internet hoặc dùng provider Piper local.") from last_error
 
 
+def normalize_tts_provider_text(text: str) -> str:
+    """Use the proven CapCut-safe Unicode form without changing canonical text."""
+    return unicodedata.normalize("NFD", text)
+
+
 def capcut_synthesize(text: str, voice: str, target: Path) -> None:
     """Tạo audio bằng CapCut TTS API (giọng chất lượng cao hơn Edge TTS).
 
@@ -530,12 +536,13 @@ def capcut_synthesize(text: str, voice: str, target: Path) -> None:
         ) from exc
 
     client = CapCutClient()
+    provider_text = normalize_tts_provider_text(text)
     last_error: Exception | None = None
 
     for attempt in range(1, 4):
         try:
             result = client.generate_speech(
-                texts=text,
+                texts=provider_text,
                 voice=voice,
                 timeout=45.0,
             )
