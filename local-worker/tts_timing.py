@@ -73,7 +73,7 @@ def run_tts_timing(
 
     _validate_options(tts_provider, voice, max_tempo)
     output_dir.mkdir(parents=True, exist_ok=True)
-    synthesizer = synthesizer or _default_synthesizer
+    synthesizer = synthesizer or _default_synthesizer(tts_provider)
     measure_duration = measure_duration or _default_measure_duration
     fit_audio = fit_audio or _default_fit_audio
     windows = _delivery_windows(alignment)
@@ -457,10 +457,16 @@ def _default_timing_repair(text: str, context: dict[str, object]) -> str | None:
     )
 
 
-def _default_synthesizer(text: str, voice: str, target: Path) -> None:
-    from dubvi_worker import capcut_synthesize
+def _default_synthesizer(tts_provider: str) -> Callable[[str, str, Path], None]:
+    from dubvi_worker import Settings, synthesize
 
-    capcut_synthesize(text, voice, target)
+    settings = Settings.from_env()
+    settings.tts_provider = str(tts_provider).lower()
+
+    def configured_synthesizer(text: str, voice: str, target: Path) -> None:
+        synthesize(text, voice, target, settings)
+
+    return configured_synthesizer
 
 
 def _default_measure_duration(path: Path) -> int:

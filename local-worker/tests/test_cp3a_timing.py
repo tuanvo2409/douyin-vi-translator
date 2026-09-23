@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 from pathlib import Path
 
@@ -145,6 +146,29 @@ class TtsTimingTests(unittest.TestCase):
 
     def _alignment(self, record: dict[str, object] | None = None) -> dict[str, object]:
         return build_alignment([record or _record(positions=[0], start=0, end=1000)])
+
+    def test_default_piper_synthesizer_uses_shared_provider_boundary(self) -> None:
+        calls: list[str] = []
+
+        def shared_provider(text: str, voice: str, target: Path, settings: object) -> None:
+            calls.append(str(getattr(settings, "tts_provider")))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"audio")
+
+        settings = SimpleNamespace(tts_provider="capcut")
+        with patch("dubvi_worker.Settings.from_env", return_value=settings), patch(
+            "dubvi_worker.synthesize", side_effect=shared_provider
+        ):
+            manifest = run_tts_timing(
+                self._alignment(),
+                self.output,
+                tts_provider="piper",
+                measure_duration=lambda _path: 500,
+                fit_audio=lambda raw, fitted, _slot_ms, _max_tempo: (fitted.write_bytes(raw.read_bytes()) or 500, False),
+            )
+
+        self.assertEqual(["piper"], calls)
+        self.assertEqual("piper", manifest["provider"])
 
     def test_measured_duration_and_tempo_ceiling_are_persisted(self) -> None:
         calls: list[str] = []
