@@ -6,7 +6,7 @@
 
 **Architecture:** Keep provider selection at the existing `dubvi_worker.synthesize` boundary. Add one lazy, process-level Piper runtime that loads the ONNX model once, emits WAV files, and leaves the existing `fit_voice`, timing, subtitle, and render stages unchanged. The legacy worker and modern P1C adapter will both pass through the same provider boundary instead of calling CapCut directly.
 
-**Tech Stack:** Python 3.12, `onnxruntime`, `piper-phonemize`, the Vietnamese VITS ONNX model from `phatjkk/vits-tts-vietnamese`, existing FFmpeg timing/render helpers, and the repository's `unittest` suite.
+**Tech Stack:** Python 3.12, `onnxruntime`, `piper-tts==1.8.0`, the Vietnamese VITS ONNX model from `phatjkk/vits-tts-vietnamese`, existing FFmpeg timing/render helpers, and the repository's `unittest` suite.
 
 **Spec:** The approved bounded design in chat for this task; no separate architectural specification is required.
 
@@ -69,7 +69,7 @@ def test_explicit_capcut_provider_remains_available(self):
 
   Expected: FAIL because the new settings fields/defaults and test module do not exist yet.
 
-- [ ] **Step 3: Implement the minimal configuration.** Add a shared provider validator, the two Piper settings, the `piper` default, and the model/speed environment parsing. Make `build_canonical_runtime_config` choose `DUBVI_TTS_PROVIDER` when present and use `piper` as the local default. Add `onnxruntime>=1.15,<2` and `piper-phonemize==1.1.0` to the worker runtime requirements.
+- [ ] **Step 3: Implement the minimal configuration.** Add a shared provider validator, the two Piper settings, the `piper` default, and the model/speed environment parsing. Make `build_canonical_runtime_config` choose `DUBVI_TTS_PROVIDER` when present and use `piper` as the local default. Add `onnxruntime>=1.15,<2` and `piper-tts==1.8.0` to the worker runtime requirements.
 
 - [ ] **Step 4: Run the focused tests and verify GREEN.**
 
@@ -123,7 +123,7 @@ def test_speed_values_are_bounded(self):
 
   Expected: FAIL because `piper_tts.py` and its runtime interfaces do not exist.
 
-- [ ] **Step 3: Implement the smallest runtime.** Read the model JSON, phonemize Vietnamese codepoints with `piper_phonemize`, create the ONNX session with CPU thread limits inherited from the worker environment, run inference with the selected length scale, normalize the output to int16, and write WAV through the standard-library `wave` module. Cache the runtime by resolved model path. Reject empty text and missing model/config files before inference.
+- [ ] **Step 3: Implement the smallest runtime.** Read the model JSON, construct `PiperConfig`/`PiperVoice` from `piper-tts`, create the ONNX session with CPU thread limits inherited from the worker environment, run inference with the selected length scale, normalize the output to int16, and write WAV through the standard-library `wave` module. Cache the runtime by resolved model path. Reject empty text and missing model/config files before inference.
 
 - [ ] **Step 4: Route `synthesize` to Piper before voice-prefix checks.** When `settings.tts_provider == "piper"`, call `piper_synthesize` even if `voice` is `BV007_streaming` or another CapCut identifier. Keep the existing CapCut and Edge branches unchanged for explicit provider selections; do not silently fall back from a missing Piper model to an online provider.
 
@@ -210,10 +210,10 @@ def test_modern_tts_stage_uses_runtime_provider(self):
 - [ ] **Step 2: Install the two runtime packages in the existing Python 3.12 environment.** Run:
 
   ```powershell
-  python -m pip install "onnxruntime>=1.15,<2" "piper-phonemize==1.1.0"
+  python -m pip install "onnxruntime>=1.15,<2" "piper-tts==1.8.0"
   ```
 
-  If the pinned phonemizer has no compatible Windows/Python 3.12 wheel, stop at this step and report the installer error before changing the runtime design.
+  `piper-tts==1.8.0` is selected because it has a compatible Windows/Python 3.12 wheel; do not substitute the unavailable `piper-phonemize==1.1.0` package.
 
 - [ ] **Step 3: Download the ONNX model and adjacent JSON config to the local model cache.** Verify both files exist and their sizes are non-zero; do not place them under a tracked repository directory.
 

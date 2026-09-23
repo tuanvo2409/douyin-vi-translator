@@ -7,4 +7,4 @@ edge-tts>=6.1.0
 requests>=2.31.0
 python-dotenv>=1.0.0
 onnxruntime>=1.15,<2
-piper-phonemize==1.1.0
+piper-tts==1.8.0

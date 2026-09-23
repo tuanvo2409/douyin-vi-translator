@@ -72,14 +72,15 @@ class PiperTtsRuntime:
         except Exception as exc:
             raise PiperTtsError(f"Piper model config is invalid: {self.config_path}") from exc
         self._session = self._load_session()
-        self._input_names = {item.name for item in self._session.get_inputs()}
 
     def _load_session(self):
         try:
             import onnxruntime
+            from piper.config import PiperConfig
+            from piper.voice import PiperVoice
         except ImportError as exc:
             raise PiperTtsError(
-                "Thiếu onnxruntime. Chạy `pip install -r requirements.txt`."
+                "Thiếu piper-tts/onnxruntime. Chạy `pip install -r requirements.txt`."
             ) from exc
         options = onnxruntime.SessionOptions()
         try:
@@ -90,42 +91,15 @@ class PiperTtsRuntime:
             raise PiperTtsError("DUBVI_TTS_CPU_THREADS phải là số nguyên dương") from exc
         options.inter_op_num_threads = 1
         try:
-            return onnxruntime.InferenceSession(str(self.model_path), sess_options=options, providers=["CPUExecutionProvider"])
+            config = PiperConfig.from_dict(self.config)
+            session = onnxruntime.InferenceSession(
+                str(self.model_path),
+                sess_options=options,
+                providers=["CPUExecutionProvider"],
+            )
+            return PiperVoice(session=session, config=config)
         except Exception as exc:
             raise PiperTtsError(f"Không thể load Piper ONNX model: {self.model_path}") from exc
-
-    def _phonemize(self, text: str) -> list[list[str]]:
-        try:
-            from piper_phonemize import phonemize_codepoints, phonemize_espeak
-        except ImportError as exc:
-            raise PiperTtsError(
-                "Thiếu piper-phonemize. Chạy `pip install -r requirements.txt`."
-            ) from exc
-        phoneme_type = str(self.config.get("phoneme_type") or "text").lower()
-        if phoneme_type == "text":
-            return phonemize_codepoints(text)
-        if phoneme_type == "espeak":
-            voice = str((self.config.get("espeak") or {}).get("voice") or "vi")
-            return phonemize_espeak(text, voice)
-        raise PiperTtsError(f"Piper model dùng phoneme_type không hỗ trợ: {phoneme_type}")
-
-    def _phonemes_to_ids(self, phonemes: list[str]) -> list[int]:
-        id_map = self.config.get("phoneme_id_map")
-        if not isinstance(id_map, dict):
-            raise PiperTtsError("Piper model config thiếu phoneme_id_map")
-        bos = id_map.get("^")
-        pad = id_map.get("_")
-        eos = id_map.get("$")
-        if not isinstance(bos, list) or not isinstance(pad, list) or not isinstance(eos, list):
-            raise PiperTtsError("Piper model config thiếu token BOS/PAD/EOS")
-        result = list(bos)
-        for phoneme in phonemes:
-            ids = id_map.get(phoneme)
-            if isinstance(ids, list):
-                result.extend(ids)
-                result.extend(pad)
-        result.extend(eos)
-        return result
 
     def synthesize(self, text: str, target: Path, speed: str) -> None:
         text = str(text).strip()
@@ -135,28 +109,24 @@ class PiperTtsRuntime:
             import numpy as np
         except ImportError as exc:
             raise PiperTtsError("Thiếu numpy cho Piper ONNX runtime") from exc
-        groups = self._phonemize(text)
-        phoneme_ids = []
-        for group in groups:
-            phoneme_ids.extend(self._phonemes_to_ids(group) + [0, 0, 0])
-        if not phoneme_ids:
-            raise PiperTtsError("Piper không tạo được phoneme từ text")
-        input_ids = np.expand_dims(np.asarray(phoneme_ids, dtype=np.int64), 0)
-        input_lengths = np.asarray([input_ids.shape[1]], dtype=np.int64)
-        scales = np.asarray([0.667, speed_length_scale(speed), 0.8], dtype=np.float32)
-        inputs = {
-            "input": input_ids,
-            "input_lengths": input_lengths,
-            "scales": scales,
-        }
-        if "sid" in self._input_names:
-            speakers = int(self.config.get("num_speakers") or 1)
-            inputs["sid"] = np.asarray([0], dtype=np.int64) if speakers > 1 else None
         try:
-            audio = self._session.run(None, inputs)[0]
-            samples = np.asarray(audio).squeeze().tolist()
-            sample_rate = int((self.config.get("audio") or {}).get("sample_rate") or 22050)
-            write_wav(Path(target), samples, sample_rate)
+            from piper.config import SynthesisConfig
+
+            chunks = list(
+                self._session.synthesize(
+                    text,
+                    SynthesisConfig(
+                        length_scale=speed_length_scale(speed),
+                        noise_scale=0.667,
+                        noise_w_scale=0.8,
+                        normalize_audio=True,
+                    ),
+                )
+            )
+            if not chunks:
+                raise PiperTtsError("Piper không tạo được audio chunk")
+            samples = np.concatenate([chunk.audio_float_array for chunk in chunks])
+            write_wav(Path(target), samples.tolist(), chunks[0].sample_rate)
         except PiperTtsError:
             raise
         except Exception as exc:
