@@ -37,6 +37,8 @@ _CANONICAL_REUP_MEDIA_RE = re.compile(
 _nllb_components: tuple[Any, Any] | None = None
 _whisper_model: Any | None = None          # Cache WhisperModel giữa các job
 _rapidocr_engine: Any | None = None        # Cache RapidOCR engine giữa các segment
+TTS_PROVIDERS = frozenset({"piper", "capcut", "edge"})
+PIPER_SPEEDS = frozenset({"normal", "fast", "very_fast"})
 
 # Giới hạn thread cho numpy/torch/onnxruntime ngay khi import — phải set TRƯỚC khi import các lib đó
 # Trên i3-1115G4 (2 core / 4 thread) dùng 2 thread là optimal, tránh context-switch thrash
@@ -53,6 +55,20 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def validate_tts_provider(value: str) -> str:
+    provider = str(value).strip().lower()
+    if provider not in TTS_PROVIDERS:
+        raise ValueError(f"DUBVI_TTS_PROVIDER must be one of: {', '.join(sorted(TTS_PROVIDERS))}")
+    return provider
+
+
+def validate_piper_speed(value: str) -> str:
+    speed = str(value).strip().lower()
+    if speed not in PIPER_SPEEDS:
+        raise ValueError(f"DUBVI_PIPER_SPEED must be one of: {', '.join(sorted(PIPER_SPEEDS))}")
+    return speed
+
+
 @dataclass
 class Settings:
     api_base: str
@@ -64,8 +80,10 @@ class Settings:
     device: str
     whisper_model: str
     poll_seconds: int
-    tts_provider: str        # "edge" hoặc "capcut"
+    tts_provider: str        # "piper", "edge" hoặc "capcut"
     capcut_voice: str        # voice_type trong Voice.json, VD: "BV421_vivn_streaming"
+    piper_model: Path
+    piper_speed: str
     translation_engine: str = "llm"  # "llm" hoặc "marian"
     llm_provider: str = "gemini"     # "gemini", "deepseek", "openai"
     gemini_api_key: str | None = None
@@ -106,8 +124,15 @@ class Settings:
             device=os.getenv("DUBVI_DEVICE", "cpu"),
             whisper_model=os.getenv("DUBVI_WHISPER_MODEL", "small"),
             poll_seconds=max(3, int(os.getenv("DUBVI_POLL_SECONDS", "10"))),
-            tts_provider=os.getenv("DUBVI_TTS_PROVIDER", "edge").lower(),
+            tts_provider=validate_tts_provider(os.getenv("DUBVI_TTS_PROVIDER", "piper")),
             capcut_voice=os.getenv("DUBVI_CAPCUT_VOICE", "BV421_vivn_streaming"),
+            piper_model=Path(
+                os.getenv(
+                    "DUBVI_PIPER_MODEL",
+                    str(model_dir / "piper-vietnamese" / "pretrained_vi.onnx"),
+                )
+            ).expanduser().resolve(),
+            piper_speed=validate_piper_speed(os.getenv("DUBVI_PIPER_SPEED", "fast")),
             translation_engine=os.getenv("DUBVI_TRANSLATION_ENGINE", "llm").lower(),
             llm_provider=os.getenv("DUBVI_LLM_PROVIDER", "gemini").lower(),
             gemini_api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"),

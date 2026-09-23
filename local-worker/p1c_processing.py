@@ -30,6 +30,7 @@ from p1c_intake import load_translator_envelope
 from p1c_status import load_status_event, publish_status_event
 from p1c_worker import HeavyWorkHandle, WorkerResult, run_lease_aware_work
 from canonical_profile import resolve_canonical_profile
+from dubvi_worker import validate_piper_speed, validate_tts_provider
 
 
 MAX_RECEIPT_BYTES = 64 * 1024
@@ -168,9 +169,10 @@ def build_canonical_runtime_config(
     voice = capcut_voice or profile.voice
     if not isinstance(voice, str) or not voice.strip():
         raise CanonicalProcessingError("canonical CapCut voice must be nonblank")
+    tts_provider = validate_tts_provider(os.environ.get("DUBVI_TTS_PROVIDER", "piper"))
     return {
         "voice": {"name": voice.strip(), "maxTempo": 1.12},
-        "ttsProvider": profile.tts_provider,
+        "ttsProvider": tts_provider,
         "persona": profile.persona,
         "localizationProfile": profile.profile_id,
         "sourceEvidenceMode": "local_asr_text_only" if profile.profile_id == "page_goc_tro_bat_on" else "multimodal_av",
@@ -563,8 +565,15 @@ def _legacy_settings(settings: P1CSettings, work_base: Path, policy_mode: str):
         device=os.environ.get("DUBVI_DEVICE", "cpu"),
         whisper_model=os.environ.get("DUBVI_WHISPER_MODEL", "small"),
         poll_seconds=10,
-        tts_provider=os.environ.get("DUBVI_TTS_PROVIDER", "capcut").lower(),
+        tts_provider=validate_tts_provider(os.environ.get("DUBVI_TTS_PROVIDER", "piper")),
         capcut_voice=os.environ.get("DUBVI_CAPCUT_VOICE", "BV421_vivn_streaming"),
+        piper_model=Path(
+            os.environ.get(
+                "DUBVI_PIPER_MODEL",
+                str(work_base / ".models" / "piper-vietnamese" / "pretrained_vi.onnx"),
+            )
+        ).expanduser().resolve(),
+        piper_speed=validate_piper_speed(os.environ.get("DUBVI_PIPER_SPEED", "fast")),
         translation_engine=os.environ.get("DUBVI_TRANSLATION_ENGINE", "llm").lower(),
         llm_provider=os.environ.get("DUBVI_LLM_PROVIDER", "gemini").lower(),
         gemini_api_key=os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"),
