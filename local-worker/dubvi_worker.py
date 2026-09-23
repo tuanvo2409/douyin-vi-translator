@@ -622,14 +622,25 @@ def capcut_synthesize(text: str, voice: str, target: Path) -> None:
     ) from last_error
 
 
+def piper_synthesize(text: str, voice: str, target: Path, settings: Settings) -> None:
+    """Tạo voice tiếng Việt local bằng một Piper ONNX session đã cache."""
+    from piper_tts import _runtime_for_model
+
+    _runtime_for_model(settings.piper_model).synthesize(text, target, settings.piper_speed)
+
+
 def synthesize(text: str, voice: str, target: Path, settings: Settings) -> None:
     """Wrapper chọn TTS provider theo voice được chọn hoặc DUBVI_TTS_PROVIDER trong .env.
 
+    - Provider `piper` → Piper ONNX local, không phụ thuộc tên voice CapCut
     - Giọng bắt đầu bằng `BV` (ví dụ `BV421_vivn_streaming`, `BV007_streaming`) → CapCut TTS
     - Giọng bắt đầu bằng `vi-` (ví dụ `vi-VN-HoaiMyNeural`, `vi-VN-NamMinhNeural`) → Edge TTS
-    - Nếu CapCut gặp sự cố, tự động fallback sang Edge TTS.
+    - CapCut/Edge chỉ chạy khi provider được chọn tương ứng.
     """
     actual_voice = voice if voice else settings.capcut_voice
+    if settings.tts_provider == "piper":
+        piper_synthesize(text, actual_voice, target, settings)
+        return
     if actual_voice.startswith("BV") or (settings.tts_provider == "capcut" and not actual_voice.startswith("vi-")):
         try:
             capcut_synthesize(text, actual_voice, target)
