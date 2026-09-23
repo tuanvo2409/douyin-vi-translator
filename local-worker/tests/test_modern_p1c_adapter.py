@@ -18,6 +18,26 @@ from modern_p1c_adapter import (
 
 
 class ModernP1CAdapterTests(unittest.TestCase):
+    def test_modern_tts_stage_uses_runtime_provider_instead_of_hard_coding_capcut(self) -> None:
+        stages = build_modern_stage_bundle(
+            runtime_config={
+                "localizationProfile": "loc-v1",
+                "ttsProvider": "piper",
+                "voice": {"name": "BV421_vivn_streaming"},
+            }
+        )
+        captured: dict[str, object] = {}
+
+        def capture(_alignment, _output_dir, **kwargs):
+            captured.update(kwargs)
+            return {"voiceEvents": []}
+
+        with patch("tts_timing.run_tts_timing", side_effect=capture):
+            stages["tts"]([], Path("output"))
+
+        self.assertEqual("piper", captured["tts_provider"])
+        self.assertNotEqual("capcut_synthesize", getattr(captured["synthesizer"], "__name__", ""))
+
     def test_delivery_uses_fitted_tts_window_without_fake_tempo(self) -> None:
         stages = build_modern_stage_bundle(
             runtime_config={"localizationProfile": "page_goc_tro_bat_on"}

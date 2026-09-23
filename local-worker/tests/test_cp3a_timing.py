@@ -7,7 +7,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from cue_aligner import CueAlignmentError, build_alignment, write_alignment_artifacts
-from tts_timing import run_cp3a, run_tts_timing
+from tts_timing import _validate_options, run_cp3a, run_tts_timing
 
 
 def _record(
@@ -654,6 +654,11 @@ class VoiceEventTimingTests(unittest.TestCase):
             )
         self.assertEqual(["Câu ngắn."], calls)
         self.assertEqual(1, result["providerCalls"])
+
+
+class TtsProviderValidationTests(unittest.TestCase):
+    def test_tts_timing_accepts_piper_provider(self) -> None:
+        _validate_options("piper", "BV421_vivn_streaming", 1.12)
 
 
 if __name__ == "__main__":

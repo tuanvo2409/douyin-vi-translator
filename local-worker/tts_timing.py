@@ -192,7 +192,7 @@ def run_tts_timing(
     manifest = {
         "schemaVersion": 1,
         "artifact": "tts_manifest_v4",
-        "provider": "capcut",
+        "provider": str(tts_provider).lower(),
         "voice": voice.strip(),
         "timingPolicyVersion": _TIMING_POLICY_VERSION,
         "tempoCeiling": float(max_tempo),
@@ -206,7 +206,7 @@ def run_tts_timing(
     qc = {
         "schemaVersion": 1,
         "artifact": "tts_qc_v4",
-        "provider": "capcut",
+        "provider": str(tts_provider).lower(),
         "voice": voice.strip(),
         "tempoCeiling": float(max_tempo),
         "alignedDialogueRows": len(alignment.get("dialogue", [])),
@@ -221,7 +221,7 @@ def run_tts_timing(
     voice_document = {
         "schemaVersion": 1,
         "artifact": "voice_events_v4",
-        "provider": "capcut",
+        "provider": str(tts_provider).lower(),
         "voice": voice.strip(),
         "tempoCeiling": float(max_tempo),
         "alignmentCoverage": coverage,
@@ -243,8 +243,8 @@ def run_tts_timing(
 
 
 def _validate_options(tts_provider: str, voice: str, max_tempo: float) -> None:
-    if str(tts_provider).lower() != "capcut":
-        raise TtsTimingError("CP3A requires the CapCut provider")
+    if str(tts_provider).lower() not in {"piper", "capcut", "edge"}:
+        raise TtsTimingError("CP3A provider must be piper, capcut, or edge")
     if not isinstance(voice, str) or not voice.strip():
         raise TtsTimingError("CP3A voice must be nonblank")
     if not isinstance(max_tempo, (int, float)) or max_tempo > MAX_TEMPO or max_tempo <= 0:

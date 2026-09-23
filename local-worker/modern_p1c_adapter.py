@@ -223,13 +223,28 @@ def build_modern_stage_bundle(*, runtime_config: Mapping[str, object]) -> dict[s
         ]
 
     def tts_stage(records: Sequence[Mapping[str, object]], output_dir: Path, **_: object) -> Mapping[str, object]:
-        from dubvi_worker import capcut_synthesize, fit_voice, ffprobe_duration
+        from dubvi_worker import Settings, fit_voice, ffprobe_duration, synthesize
         from tts_timing import run_tts_timing
+        settings = Settings.from_env()
+        provider = str(runtime_config.get("ttsProvider") or settings.tts_provider).strip().lower()
+        settings.tts_provider = provider
+
+        def configured_synthesizer(text: str, voice: str, target: Path) -> None:
+            synthesize(text, voice, target, settings)
+
         alignment = {
             "dialogue": [dict(item) for item in records],
             "excluded": list((state.get("alignment") or {}).get("excluded", [])) if isinstance(state.get("alignment"), Mapping) else [],
         }
-        return run_tts_timing(alignment, output_dir, voice=str(runtime_config["voice"]["name"]), synthesizer=capcut_synthesize, measure_duration=lambda p: round(ffprobe_duration(p) * 1000), fit_audio=fit_voice)
+        return run_tts_timing(
+            alignment,
+            output_dir,
+            voice=str((runtime_config.get("voice") or {}).get("name") or settings.capcut_voice),
+            tts_provider=provider,
+            synthesizer=configured_synthesizer,
+            measure_duration=lambda p: round(ffprobe_duration(p) * 1000),
+            fit_audio=fit_voice,
+        )
 
     def delivery_stage(records: Sequence[Mapping[str, object]], *, voice_events: Sequence[Mapping[str, object]], **_: object) -> Sequence[Mapping[str, object]]:
         from delivery_planner import DeliveryPolicy, plan_delivery
