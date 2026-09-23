@@ -10,6 +10,7 @@ from typing import Callable, Mapping, Sequence
 from llm_transport import (
     ProviderError,
     StructuredGeminiTransport,
+    StructuredResponseError,
     groq_json_transport,
     is_transient_http_status,
 )
@@ -165,7 +166,7 @@ def _gemini_fallback_allowed(error: ProviderError) -> bool:
 
 
 class GeminiPrimaryWithGroqTextFallback:
-    """Keep Gemini primary; invoke Groq only for provider availability/quota failures."""
+    """Keep Gemini primary; use Groq for authorized provider/schema failures."""
 
     def __init__(self, gemini: Callable[[Mapping[str, object]], object], groq: Callable[[Mapping[str, object]], object]) -> None:
         self.gemini = gemini
@@ -182,6 +183,12 @@ class GeminiPrimaryWithGroqTextFallback:
             if not _gemini_fallback_allowed(error):
                 raise
             self.gemini_failure = error.classification
+            self.last_provider = "groq_text"
+            return self.groq(payload)
+        except StructuredResponseError as error:
+            if str(error) != "CP2_RESPONSE_SCHEMA_INVALID":
+                raise
+            self.gemini_failure = "CP2_RESPONSE_SCHEMA_INVALID"
             self.last_provider = "groq_text"
             return self.groq(payload)
 

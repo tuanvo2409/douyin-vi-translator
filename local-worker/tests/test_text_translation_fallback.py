@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import Mock
 
-from llm_transport import ProviderError
+from llm_transport import ProviderError, StructuredResponseError
 
 try:
     from text_translation_fallback import (
@@ -85,6 +85,20 @@ class TextTranslationFallbackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "CP2_RESPONSE_SCHEMA_INVALID"):
             GeminiPrimaryWithGroqTextFallback(gemini, groq)({"mode": "semantic", "utterances": _records(1)})
         groq.assert_not_called()
+
+    def test_gemini_cp2_schema_failure_falls_back_to_groq_when_authorized(self) -> None:
+        records = _records(1)
+        gemini = Mock(side_effect=StructuredResponseError("CP2_RESPONSE_SCHEMA_INVALID"))
+        groq = Mock(return_value=_response(records))
+        adapter = GeminiPrimaryWithGroqTextFallback(gemini, groq)
+
+        result = adapter(
+            {"mode": "semantic", "utterances": records}
+        )
+
+        self.assertEqual("groq_text", adapter.last_provider)
+        self.assertEqual("Câu tiếng Việt u0", result["translations"][0]["semanticVi"])
+        groq.assert_called_once()
 
     def test_groq_rejects_unknown_duplicate_and_missing_ids(self) -> None:
         records = _records(2)

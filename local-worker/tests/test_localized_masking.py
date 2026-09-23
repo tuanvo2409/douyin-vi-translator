@@ -41,6 +41,16 @@ class LocalizedMaskPlanTests(unittest.TestCase):
         self.assertTrue(np.array_equal(original_background, repaired[12:25, 12:25]))
         self.assertLess(float(np.mean(repaired[35:39, 45:75])), 240.0)
 
+    def test_repair_masks_dark_outline_around_bright_subtitle_glyphs(self) -> None:
+        frame = np.full((80, 120, 3), 220, dtype=np.uint8)
+        cv2.rectangle(frame, (42, 30), (78, 50), (0, 0, 0), -1)
+        cv2.rectangle(frame, (46, 34), (74, 46), (0, 220, 255), -1)
+
+        repaired, method = localized_masking.repair_region(frame, (38, 26, 82, 54), None)
+
+        self.assertIn(method, {"inpaint", "plate"})
+        self.assertGreater(float(np.mean(repaired[30:50, 42:78])), 210.0)
+
     def test_watermark_repair_removes_dim_glyphs_within_its_category(self) -> None:
         frame = np.full((100, 180, 3), 110, dtype=np.uint8)
         frame[28:42, 42:142] = 160

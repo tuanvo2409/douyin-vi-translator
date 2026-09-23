@@ -103,7 +103,8 @@ def _build_text_repair_mask(frame: np.ndarray, bbox: tuple[int, int, int, int]) 
     candidate = contrast >= max(10.0, float(np.percentile(contrast, 75)))
     mask = (candidate.astype(np.uint8) * 255)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
-    mask = cv2.dilate(mask, np.ones((5, 5), dtype=np.uint8), iterations=1)
+    outline_radius = max(2, min(7, int(round((y2 - y1) * 0.25))))
+    mask = cv2.dilate(mask, np.ones((outline_radius * 2 + 1, outline_radius * 2 + 1), dtype=np.uint8), iterations=1)
     full_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
     full_mask[y1:y2, x1:x2] = mask
     return full_mask

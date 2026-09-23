@@ -30,13 +30,20 @@ class CapCutTtsProviderInputTests(unittest.TestCase):
 
         _, _, body = CapCutClient().build_tts_new_request(
             texts=provider_text,
-            voice="BV007_streaming",
+            voice="BV421_vivn_streaming",
         )
         task = json.loads(body)["tasks"][0]
         payload = json.loads(task["payload"])
 
         self.assertIn(provider_text, payload["ssml"])
         self.assertNotIn(canonical, payload["ssml"])
+
+    def test_unknown_voice_without_resource_id_fails_closed(self) -> None:
+        with self.assertRaises(ValueError) as raised:
+            CapCutClient().resolve_voice("BV007_streaming")
+
+        self.assertIn("BV007_streaming", str(raised.exception))
+        self.assertIn("resource_id", str(raised.exception))
 
     def test_canonical_display_text_is_not_mutated(self) -> None:
         canonical = "Thuê nhà"

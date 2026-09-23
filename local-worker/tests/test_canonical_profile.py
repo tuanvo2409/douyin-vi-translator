@@ -6,6 +6,14 @@ from canonical_profile import CanonicalProfileConfigurationError, resolve_canoni
 
 
 class CanonicalProfileTests(unittest.TestCase):
+    def test_page_a_resolves_for_the_facebook_reels_product_target(self) -> None:
+        page_a = resolve_canonical_profile(
+            {"localization_profile": "page_goc_tro_bat_on", "target_platform": "facebook-reels"}
+        )
+
+        self.assertEqual("page_goc_tro_bat_on", page_a.profile_id)
+        self.assertEqual("BV007_streaming", page_a.voice)
+
     def test_page_profiles_resolve_distinct_persona_voice_and_safe_subtitle_policy(self) -> None:
         page_a = resolve_canonical_profile({"localization_profile": "page_goc_tro_bat_on", "target_platform": "tiktok"})
         page_b = resolve_canonical_profile({"localization_profile": "page_giai_cuu_chuong_lon", "target_platform": "tiktok"})

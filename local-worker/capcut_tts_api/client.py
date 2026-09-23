@@ -109,10 +109,13 @@ class CapCutClient:
             if v.display_name.lower() == target_lower or (target_res and v.resource_id == target_res):
                 return v.voice_type, target_res or v.resource_id
 
-        # Fallback to provided values or defaults
-        resolved_voice = target_voice
-        resolved_res = target_res or default_resource_id
-        return resolved_voice, resolved_res
+        # Never silently pair an unknown voice with another voice's resource ID.
+        if not target_res:
+            raise ValueError(
+                f"Unknown voice {target_voice!r}; add it to Voice.json or pass an explicit resource_id."
+            )
+
+        return target_voice, target_res
 
     # -------------------------------------------------------------------------
     # Request Payload Builders (Dry-run capable)

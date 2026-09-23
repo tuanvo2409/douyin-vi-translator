@@ -325,21 +325,33 @@ def scan_inventory(media_dir: Path) -> list[dict[str, Any]]:
     return sorted(result, key=lambda item: item["modifiedAtMs"], reverse=True)[:500]
 
 
+def whisper_runtime_options(device: str) -> dict[str, Any]:
+    """Read bounded Whisper worker limits from the Control Plane child environment."""
+
+    if device == "cpu":
+        compute_type = os.getenv("DUBVI_WHISPER_COMPUTE_TYPE", "int8")
+    else:
+        compute_type = "float16"
+    return {
+        "compute_type": compute_type,
+        "cpu_threads": int(os.getenv("DUBVI_WHISPER_CPU_THREADS", "2")),
+        "num_workers": int(os.getenv("DUBVI_WHISPER_DECODE_WORKERS", "1")),
+    }
+
+
 def transcribe(audio_path: Path, model_name: str, device: str) -> list[dict[str, Any]]:
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
         raise RuntimeError("Thiếu faster-whisper. Chạy `pip install -r requirements.txt`.") from exc
     global _whisper_model
-    compute_type = "int8" if device == "cpu" else "float16"
+    options = whisper_runtime_options(device)
     # Cache model giữa các job — tránh load lại model (~1-2 phút) mỗi lần
     if _whisper_model is None:
         _whisper_model = WhisperModel(
             model_name,
             device=device,
-            compute_type=compute_type,
-            cpu_threads=2,       # i3-1115G4: 2 core vật lý, 2 thread là optimal
-            num_workers=1,       # 1 worker decode, không cần nhiều hơn trên CPU
+            **options,
         )
     model = _whisper_model
     # beam_size=1 (greedy) nhanh hơn ~2x so với beam_size=5 mặc định, đủ dùng với model tiny

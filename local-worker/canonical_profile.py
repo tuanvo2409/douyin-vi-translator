@@ -73,13 +73,13 @@ _PROFILES = {
 
 
 def resolve_canonical_profile(document: Mapping[str, object]) -> CanonicalLocalizationProfile:
-    """Resolve an explicit TikTok profile; never infer from a path or slug."""
+    """Resolve an explicit supported-platform profile; never infer from a path or slug."""
 
     if not isinstance(document, Mapping):
         raise CanonicalProfileConfigurationError("canonical localization_profile is required")
     platform = document.get("target_platform")
-    if platform != "tiktok":
-        raise CanonicalProfileConfigurationError("canonical target_platform must be tiktok")
+    if platform not in {"tiktok", "facebook-reels"}:
+        raise CanonicalProfileConfigurationError("canonical target_platform must be tiktok or facebook-reels")
     profile_id = document.get("localization_profile")
     if not isinstance(profile_id, str) or not profile_id.strip():
         raise CanonicalProfileConfigurationError("canonical localization_profile is required")
