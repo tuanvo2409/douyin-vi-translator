@@ -470,6 +470,63 @@ def translate_with_openai_compatible(
     return segments
 
 
+def translate_with_deepseek(
+    segments: List[Dict[str, Any]], api_key: str, channel_profile: Optional[str] = None,
+    context_card: Optional[Dict[str, Any]] = None, glossary: Any = None,
+) -> List[Dict[str, Any]]:
+    """Translate short contextual batches; retry only missing or non-Vietnamese cues once."""
+    bounded_context = normalize_context_card(context_card)
+    bounded_glossary = normalize_glossary(glossary)
+    for batch in build_contextual_batches(segments, max_current=10):
+        current = batch["current"]
+        pending = current
+        for attempt in range(2):
+            if not pending:
+                break
+            prompt = build_contextual_prompt(
+                pending, batch["previous"], batch["following"],
+                bounded_context, bounded_glossary, channel_profile,
+            )
+            if attempt:
+                prompt += "\nBản dịch trước còn thiếu hoặc chứa chữ Hán. Dịch lại CHỈ các CUES này sang tiếng Việt, giữ đúng position."
+            response = requests.post(
+                "https://api.deepseek.com/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "deepseek-flash", "thinking": {"type": "disabled"},
+                    "stream": False, "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": build_system_prompt(channel_profile)},
+                        {"role": "user", "content": prompt},
+                    ],
+                },
+                timeout=45,
+            )
+            response.raise_for_status()
+            try:
+                document = json.loads(response.json()["choices"][0]["message"]["content"])
+            except (KeyError, IndexError, TypeError, ValueError):
+                document = {}
+            expected = {cue.get("position", index): cue for index, cue in enumerate(pending)}
+            items = document.get("translations") if isinstance(document, dict) else None
+            if isinstance(items, list):
+                seen: set[int] = set()
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    position, translated = item.get("position"), item.get("translatedTextVi")
+                    if not isinstance(position, int) or position in seen or position not in expected:
+                        continue
+                    seen.add(position)
+                    if is_valid_translation_text(translated):
+                        expected[position]["translatedTextVi"] = clean_vietnamese_text(translated)
+            pending = [cue for cue in pending if not cue.get("translatedTextVi")]
+        for cue in pending:
+            cue["needsReview"] = True
+        bounded_context = advance_context_card(bounded_context, current, bounded_glossary)
+    return segments
+
+
 def clean_vietnamese_text(text: str) -> str:
     """Normalize whitespace only; invalid provider text must never be silently mutilated."""
     if not text:
@@ -507,10 +564,9 @@ def translate_segments_native(
     if not all(s.get("translatedTextVi") for s in segments) and deepseek_key:
         try:
             logger.info("Chuyển ngữ kịch bản bằng DeepSeek Chat API...")
-            segments = translate_with_openai_compatible(
-                segments, deepseek_key,
-                base_url="https://api.deepseek.com/v1",
-                model="deepseek-chat"
+            segments = translate_with_deepseek(
+                segments, deepseek_key, channel_profile=channel_profile,
+                context_card=context_card, glossary=glossary,
             )
         except Exception as exc:
             logger.warning(f"Lỗi khi gọi DeepSeek API ({type(exc).__name__})...")
@@ -529,7 +585,7 @@ def translate_segments_native(
 
     # 4. Emergency Fallback: Tự động dịch các câu còn lại qua Google Translate nếu toàn bộ LLM key bị giới hạn 429
     untranslated = [s for s in segments if not s.get("translatedTextVi")]
-    if untranslated:
+    if untranslated and provider != "deepseek":
         logger.info(f"Đang dùng Fallback Google Translate cho {len(untranslated)}/{len(segments)} câu chưa dịch...")
         for s in untranslated:
             src = s.get("sourceTextZh") or s.get("asrTextZh") or ""
