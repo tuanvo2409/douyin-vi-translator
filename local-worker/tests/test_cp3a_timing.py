@@ -375,6 +375,35 @@ class TtsTimingTests(unittest.TestCase):
         self.assertTrue(second["rows"][0]["cacheHit"])
         self.assertEqual(first["rows"][0]["audioPath"], second["rows"][0]["audioPath"])
 
+    def test_cache_key_includes_the_actual_tts_resource_identity(self) -> None:
+        calls: list[str] = []
+
+        def synthesize(text: str, voice: str, target: Path) -> None:
+            calls.append(voice)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"audio")
+
+        def fit_audio(raw: Path, fitted: Path, slot_ms: int, max_tempo: float) -> tuple[int, bool]:
+            fitted.write_bytes(raw.read_bytes())
+            return 500, False
+
+        first_identity = {"provider": "piper", "model": "C:/models/a/pretrained_vi.onnx"}
+        second_identity = {"provider": "piper", "model": "D:/models/b/pretrained_vi.onnx"}
+        run_tts_timing(
+            self._alignment(), self.output, voice="piper:pretrained_vi.onnx", tts_provider="piper",
+            resource_identity=first_identity, synthesizer=synthesize,
+            measure_duration=lambda path: 500, fit_audio=fit_audio,
+        )
+        second = run_tts_timing(
+            self._alignment(), self.output, voice="piper:pretrained_vi.onnx", tts_provider="piper",
+            resource_identity=second_identity, synthesizer=synthesize,
+            measure_duration=lambda path: 500, fit_audio=fit_audio,
+        )
+
+        self.assertEqual(2, len(calls))
+        self.assertEqual(0, second["cacheHits"])
+        self.assertFalse(second["rows"][0]["cacheHit"])
+
     def test_cache_collision_cannot_reuse_audio_for_another_utterance_identity(self) -> None:
         def synthesize(text: str, voice: str, target: Path) -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -683,6 +712,15 @@ class VoiceEventTimingTests(unittest.TestCase):
 class TtsProviderValidationTests(unittest.TestCase):
     def test_tts_timing_accepts_piper_provider(self) -> None:
         _validate_options("piper", "BV421_vivn_streaming", 1.12)
+
+    def test_default_timing_repair_prunes_filler_tokens_locally_without_api(self) -> None:
+        from tts_timing import _default_timing_repair
+        context = {
+            "position": 0, "startMs": 0, "endMs": 1000,
+            "resolvedZh": "你好", "measuredDurationMs": 1300,
+        }
+        repaired = _default_timing_repair("Tôi đi nhé", context)
+        self.assertIn(repaired, {"Tôi đi", "Tôi nhé"})
 
 
 if __name__ == "__main__":

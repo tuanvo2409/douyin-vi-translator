@@ -38,6 +38,7 @@ def run_cp3a(
     measure_duration: Callable[[Path], int] | None = None,
     fit_audio: Callable[[Path, Path, int, float], tuple[int, bool]] | None = None,
     timing_repair: Callable[[str, dict[str, object]], str | None] | None = None,
+    resource_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Run only CP3A from the persisted CP2 artifact; never renders video."""
 
@@ -54,6 +55,7 @@ def run_cp3a(
         measure_duration=measure_duration,
         fit_audio=fit_audio,
         timing_repair=timing_repair if timing_repair is not None else _default_timing_repair,
+        resource_identity=resource_identity,
     )
 
 
@@ -68,10 +70,16 @@ def run_tts_timing(
     measure_duration: Callable[[Path], int] | None = None,
     fit_audio: Callable[[Path, Path, int, float], tuple[int, bool]] | None = None,
     timing_repair: Callable[[str, dict[str, object]], str | None] | None = None,
+    resource_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Create one measured voice event per eligible semantic utterance."""
 
     _validate_options(tts_provider, voice, max_tempo)
+    provider_name = str(tts_provider).lower()
+    actual_resource_identity = dict(
+        resource_identity if resource_identity is not None
+        else {"provider": provider_name, "voice": voice.strip()}
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     synthesizer = synthesizer or _default_synthesizer(tts_provider)
     measure_duration = measure_duration or _default_measure_duration
@@ -96,7 +104,10 @@ def run_tts_timing(
             raise TtsTimingError("alignment dialogue row has no utterance identity")
         source_positions = list(utterance.get("sourcePositions") or [])
         approved_text = str(utterance.get("nativeVi") or "").strip()
-        key = _cache_key(identifier, source_positions, approved_text, voice, tts_provider, window)
+        key = _cache_key(
+            identifier, source_positions, approved_text, voice, tts_provider, window,
+            resource_identity=actual_resource_identity,
+        )
         event = _base_event(utterance, window, approved_text, key)
         if bool(utterance.get("reviewRequired")) or not bool(utterance.get("ttsEligible")):
             reason = _review_reason(utterance)
@@ -192,8 +203,9 @@ def run_tts_timing(
     manifest = {
         "schemaVersion": 1,
         "artifact": "tts_manifest_v4",
-        "provider": str(tts_provider).lower(),
+        "provider": provider_name,
         "voice": voice.strip(),
+        "resourceIdentity": actual_resource_identity,
         "timingPolicyVersion": _TIMING_POLICY_VERSION,
         "tempoCeiling": float(max_tempo),
         "alignmentCoverage": coverage,
@@ -433,28 +445,46 @@ def _assess_repair(original: str, replacement: object) -> tuple[bool, str]:
 
 
 def _default_timing_repair(text: str, context: dict[str, object]) -> str | None:
-    from llm_translator import refine_for_tts_overflow
+    # First attempt: safe local pruning of removable filler tokens without external API latency or leakage
+    words = text.split()
+    for i in range(len(words) - 1, -1, -1):
+        clean_word = re.sub(r"[^\w\s]", "", words[i].lower())
+        if clean_word in _REPAIR_REMOVABLE_TOKENS:
+            new_words = words[:i] + words[i + 1:]
+            candidate_text = " ".join(new_words)
+            accepted, _ = _assess_repair(text, candidate_text)
+            if accepted:
+                return candidate_text
 
-    segment = {
-        "position": context["position"],
-        "startMs": context["startMs"],
-        "endMs": context["endMs"],
-        "sourceTextZh": context["resolvedZh"],
-        "translatedTextVi": text,
-    }
-    return refine_for_tts_overflow(
-        segment,
-        api_key=os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"),
-        measured_ms=int(context["measuredDurationMs"]),
-        previous=[],
-        following=[],
-        context_card={
-            "intent": context.get("intent"),
-            "roleplay": context.get("roleplay"),
-            "register": context.get("register"),
-        },
-        glossary=(),
-    )
+    # Second attempt: If Gemini key is explicitly configured, use refine_for_tts_overflow
+    gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if gemini_key:
+        try:
+            from llm_translator import refine_for_tts_overflow
+
+            segment = {
+                "position": context["position"],
+                "startMs": context["startMs"],
+                "endMs": context["endMs"],
+                "sourceTextZh": context["resolvedZh"],
+                "translatedTextVi": text,
+            }
+            return refine_for_tts_overflow(
+                segment,
+                api_key=gemini_key,
+                measured_ms=int(context["measuredDurationMs"]),
+                previous=[],
+                following=[],
+                context_card={
+                    "intent": context.get("intent"),
+                    "roleplay": context.get("roleplay"),
+                    "register": context.get("register"),
+                },
+                glossary=(),
+            )
+        except Exception:
+            return None
+    return None
 
 
 def _default_synthesizer(tts_provider: str) -> Callable[[str, str, Path], None]:
@@ -491,13 +521,23 @@ def _review_reason(utterance: Mapping[str, object]) -> str:
     return "REVIEW_REQUIRED"
 
 
-def _cache_key(identifier: str, source_positions: Sequence[object], text: str, voice: str, provider: str, window: Mapping[str, int]) -> str:
+def _cache_key(
+    identifier: str,
+    source_positions: Sequence[object],
+    text: str,
+    voice: str,
+    provider: str,
+    window: Mapping[str, int],
+    *,
+    resource_identity: Mapping[str, object] | None = None,
+) -> str:
     payload = json.dumps({
         "utteranceId": identifier,
         "sourcePositions": list(source_positions),
         "deliveryText": text,
         "voice": voice,
         "provider": provider,
+        "resourceIdentity": dict(resource_identity or {}),
         "effectiveStartMs": window["effectiveStartMs"],
         "effectiveEndMs": window["effectiveEndMs"],
         "timingPolicyVersion": _TIMING_POLICY_VERSION,
