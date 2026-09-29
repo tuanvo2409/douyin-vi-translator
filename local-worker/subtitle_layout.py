@@ -5,7 +5,9 @@ from __future__ import annotations
 import math
 import os
 import re
-from dataclasses import dataclass
+import string
+import unicodedata
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -168,11 +170,14 @@ def render_ass_document(
     policy: SubtitleLayoutPolicy | None = None,
     *,
     presentation_color: str | None = None,
+    page1_mask_mode: bool = False,
 ) -> str:
     """Render measured display cues as explicit ASS text and box events."""
 
     policy = policy or SubtitleLayoutPolicy()
-    primary_color = _ass_color(presentation_color or "#FFFFFF")
+    primary_color = _ass_color("#000000" if page1_mask_mode else (presentation_color or "#FFFFFF"))
+    text_outline = 0 if page1_mask_mode else policy.outline_px
+    text_shadow = 0 if page1_mask_mode else policy.shadow_px
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -180,11 +185,12 @@ def render_ass_document(
         f"PlayResY: {policy.frame_height}",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: SubtitleText,{policy.font_name},{policy.font_size},{primary_color},{primary_color},&H00101010,&H00000000,0,0,0,0,100,100,0,0,1,{policy.outline_px},{policy.shadow_px},5,0,0,0,1",
-        f"Style: SubtitleBox,{policy.font_name},1,&H99000000,&H99000000,&H99000000,&H99000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1",
+        f"Style: SubtitleText,{policy.font_name},{policy.font_size},{primary_color},{primary_color},&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,{text_outline},{text_shadow},5,0,0,0,1",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
+    if not page1_mask_mode:
+        lines.insert(-2, f"Style: SubtitleBox,{policy.font_name},1,&H99000000,&H99000000,&H99000000,&H99000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1")
     for cue in display_cues:
         start = _ass_time(_integer(cue, "outputStartMs"))
         end = _ass_time(_integer(cue, "outputEndMs"))
@@ -193,9 +199,10 @@ def render_ass_document(
         center_x = _render_anchor_x(cue, policy, box_width)
         center_y = _render_anchor(cue, policy, box_height)
         box_path = f"m 0 0 l {box_width} 0 l {box_width} {box_height} l 0 {box_height}"
-        lines.append(
-            f"Dialogue: 0,{start},{end},SubtitleBox,,0,0,0,,{{\\an5\\pos({center_x},{center_y})\\p1}}{box_path}{{\\p0}}"
-        )
+        if not page1_mask_mode:
+            lines.append(
+                f"Dialogue: 0,{start},{end},SubtitleBox,,0,0,0,,{{\\an5\\pos({center_x},{center_y})\\p1}}{box_path}{{\\p0}}"
+            )
         text = r"\N".join(_ass_escape_text(str(line)) for line in cue["lines"])
         lines.append(
             f"Dialogue: 1,{start},{end},SubtitleText,,0,0,0,,{{\\an5\\pos({center_x},{center_y})\\fs{_integer(cue, 'fontSize')}}}{text}"
@@ -213,6 +220,7 @@ def write_ass_subtitles(
     placement_evidence: Sequence[Mapping[str, object]] | None = None,
     source_to_output: object | None = None,
     presentation_color: str | None = None,
+    page1_mask_bbox: tuple[int, int, int, int] | None = None,
 ) -> dict[str, object]:
     """Write a measured ASS overlay and return its diagnostics document."""
 
@@ -220,17 +228,70 @@ def write_ass_subtitles(
         policy = SubtitleLayoutPolicy(frame_width=width, frame_height=height)
     elif policy.frame_width != width or policy.frame_height != height:
         raise SubtitleLayoutError("policy frame dimensions do not match ASS dimensions")
-    result = layout_subtitles(
-        cues,
-        policy=policy,
-        placement_evidence=placement_evidence,
-        source_to_output=source_to_output,
-    )
+    page1_mask_mode = page1_mask_bbox is not None
+    if page1_mask_mode:
+        result = _layout_page1_mask(cues, policy, page1_mask_bbox)
+    else:
+        result = layout_subtitles(
+            cues,
+            policy=policy,
+            placement_evidence=placement_evidence,
+            source_to_output=source_to_output,
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        render_ass_document(result["displayCues"], policy, presentation_color=presentation_color),
+        render_ass_document(
+            result["displayCues"], policy,
+            presentation_color=presentation_color,
+            page1_mask_mode=page1_mask_mode,
+        ),
         encoding="utf-8",
     )
+    return result
+
+
+def _layout_page1_mask(
+    cues: Sequence[Mapping[str, object]],
+    policy: SubtitleLayoutPolicy,
+    mask_bbox: tuple[int, int, int, int],
+) -> dict[str, object]:
+    """Fit black Vietnamese text inside the single approved white Page 1 mask."""
+    left, top, right, bottom = mask_bbox
+    if not (
+        0 <= left < right <= policy.frame_width
+        and 0 <= top < bottom <= policy.frame_height
+    ):
+        raise SubtitleLayoutError("Page 1 mask bounds are invalid")
+    mask_policy = replace(
+        policy,
+        frame_width=right - left,
+        frame_height=bottom - top,
+        max_box_width_ratio=1.0,
+        horizontal_safe_margin_ratio=0.0,
+        bottom_safe_margin_px=0,
+    )
+    result = layout_subtitles(cues, policy=mask_policy)
+    mask_center_x = (left + right) // 2
+    mask_center_y = (top + bottom) // 2
+    for cue in result["displayCues"]:
+        box_width = int(cue["boxWidthPx"])
+        box_height = int(cue["boxHeightPx"])
+        cue["finalAnchorXPx"] = mask_center_x
+        cue["finalAnchorYPx"] = mask_center_y
+        cue["boxLeftPx"] = mask_center_x - box_width // 2
+        cue["boxRightPx"] = cue["boxLeftPx"] + box_width
+        cue["boxTopPx"] = mask_center_y - box_height // 2
+        cue["boxBottomPx"] = cue["boxTopPx"] + box_height
+        if not (
+            left <= cue["boxLeftPx"]
+            and cue["boxRightPx"] <= right
+            and top <= cue["boxTopPx"]
+            and cue["boxBottomPx"] <= bottom
+        ):
+            raise SubtitleLayoutError("Page 1 subtitle text does not fit inside the white mask")
+    result["policy"] = _policy_document(policy)
+    result["artifact"] = "subtitle_layout_page1_mask_v1"
+    result["page1MaskBBox"] = [left, top, right, bottom]
     return result
 
 
@@ -244,6 +305,17 @@ def _ass_color(value: str) -> str:
 
 
 _DIALOGUE_CATEGORIES = frozenset({"DIALOGUE_SUBTITLE", "CHINESE_DIALOGUE_SUBTITLE"})
+_SOURCE_TEXT_PUNCTUATION = set(string.punctuation) | set("，。！？、；：‘’“”【】（）《》…—·")
+
+
+def _normalise_source_text(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return "".join(
+        character.casefold()
+        for character in unicodedata.normalize("NFKC", value)
+        if not character.isspace() and character not in _SOURCE_TEXT_PUNCTUATION
+    )
 
 
 def _source_placement(
@@ -283,7 +355,9 @@ def _source_placement(
             continue
         interval = _evidence_interval(raw)
         bbox = _evidence_bbox(raw, policy)
-        if interval is None or bbox is None:
+        text = _normalise_source_text(raw.get("text"))
+        subtitle = _normalise_source_text(raw.get("subtitleZh"))
+        if interval is None or bbox is None or not text or not subtitle or text != subtitle:
             malformed = True
             continue
         try:

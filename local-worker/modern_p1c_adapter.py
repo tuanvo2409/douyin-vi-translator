@@ -567,17 +567,26 @@ def _prepare_page1_mask(
 
     try:
         frame_size = ffprobe_dimensions(source)
-        active_detections = detections
-        roi = state.get("sourceOcrRoi")
-        if isinstance(roi, (list, tuple)) and len(roi) == 4:
-            rx1, ry1, rx2, ry2 = roi
-            active_detections = [
-                d for d in detections
-                if not (
-                    isinstance(d.get("bbox"), (list, tuple)) and len(d["bbox"]) == 4
-                    and (d["bbox"][3] < ry1 - 25 or d["bbox"][1] > ry2 + 25)
-                )
-            ]
+        cue_readings = [
+            reading for cue in cues
+            for reading in cue.get("ocr_readings", [])
+            if isinstance(reading, Mapping)
+            and str(reading.get("category") or reading.get("role") or "").strip().upper() == "DIALOGUE_SUBTITLE"
+        ]
+        if cue_readings and len({r.get("timestampMs") for r in cue_readings if isinstance(r.get("timestampMs"), int)}) >= 2:
+            active_detections = cue_readings
+        else:
+            active_detections = detections
+            roi = state.get("sourceOcrRoi")
+            if isinstance(roi, (list, tuple)) and len(roi) == 4:
+                rx1, ry1, rx2, ry2 = roi
+                active_detections = [
+                    d for d in detections
+                    if not (
+                        isinstance(d.get("bbox"), (list, tuple)) and len(d["bbox"]) == 4
+                        and (d["bbox"][3] < ry1 - 25 or d["bbox"][1] > ry2 + 25)
+                    )
+                ]
         geometry = _page1_mask_geometry(
             active_detections, frame_size,
             asr_cues=[(int(cue["start_ms"]), int(cue["end_ms"])) for cue in cues],
