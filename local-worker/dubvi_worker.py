@@ -36,7 +36,14 @@ _CANONICAL_REUP_MEDIA_RE = re.compile(
 )
 _nllb_components: tuple[Any, Any] | None = None
 _whisper_model: Any | None = None          # Cache WhisperModel giữa các job
+_whisper_model_key: tuple[str, str, str | None] | None = None
 _rapidocr_engine: Any | None = None        # Cache RapidOCR engine giữa các segment
+
+
+class _OfflineModelLoadError(RuntimeError):
+    """Sanitized error for a model that is unavailable in the local cache."""
+
+
 TTS_PROVIDERS = frozenset({"piper", "capcut", "edge"})
 PIPER_SPEEDS = frozenset({"normal", "fast", "very_fast"})
 
@@ -67,6 +74,47 @@ def validate_piper_speed(value: str) -> str:
     if speed not in PIPER_SPEEDS:
         raise ValueError(f"DUBVI_PIPER_SPEED must be one of: {', '.join(sorted(PIPER_SPEEDS))}")
     return speed
+
+
+DOUYIN_OUTRO_CTA_KEYWORDS = [
+    "住小帮", "设计我家", "左下角", "搜小区", "小区名",
+    "免费生成", "专属你家", "点赞关注", "关注我", "主页",
+    "私信", "点击链接", "点击下方", "下载", "一键匹配",
+    "户型图", "免费领取", "同款设计", "立即预约", "小房子"
+]
+
+
+def detect_outro_cta(
+    segments: list[dict[str, Any]],
+    video_duration_s: float,
+    tail_window_s: float = 20.0
+) -> tuple[int | None, str | None, int | None]:
+    """Smart Outro CTA Trimmer: detect Douyin outro promo CTA within tail_window_s."""
+    if not segments or video_duration_s <= 0:
+        return None, None, None
+
+    threshold_ms = int(max(0.0, video_duration_s - tail_window_s) * 1000)
+    first_cta_idx = None
+    matched_keyword = None
+
+    for i in range(len(segments) - 1, -1, -1):
+        seg = segments[i]
+        st_ms = seg.get("startMs", 0)
+        if st_ms < threshold_ms:
+            break
+
+        text = (seg.get("asrTextZh") or seg.get("chinese_text") or seg.get("text") or "").strip()
+        for kw in DOUYIN_OUTRO_CTA_KEYWORDS:
+            if kw in text:
+                first_cta_idx = i
+                matched_keyword = kw
+                break
+
+    if first_cta_idx is not None:
+        cutoff_ms = segments[first_cta_idx]["startMs"]
+        return cutoff_ms, matched_keyword, first_cta_idx
+
+    return None, None, None
 
 
 @dataclass
@@ -364,21 +412,36 @@ def whisper_runtime_options(device: str) -> dict[str, Any]:
     }
 
 
-def transcribe(audio_path: Path, model_name: str, device: str) -> list[dict[str, Any]]:
+def ensure_whisper_model(model_name: str, device: str) -> Any:
+    """Resolve one selected Whisper model from the local cache before media work."""
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
         raise RuntimeError("Thiếu faster-whisper. Chạy `pip install -r requirements.txt`.") from exc
-    global _whisper_model
+    global _whisper_model, _whisper_model_key
+    cache_key = (str(model_name), str(device), os.environ.get("HF_HOME"))
     options = whisper_runtime_options(device)
     # Cache model giữa các job — tránh load lại model (~1-2 phút) mỗi lần
-    if _whisper_model is None:
-        _whisper_model = WhisperModel(
-            model_name,
-            device=device,
-            **options,
-        )
-    model = _whisper_model
+    if _whisper_model is None or _whisper_model_key != cache_key:
+        try:
+            model = WhisperModel(
+                model_name,
+                device=device,
+                local_files_only=True,
+                **options,
+            )
+        except Exception:
+            raise RuntimeError(
+                f"Whisper model '{model_name}' không có hoặc không tải được từ local cache offline; "
+                "hãy cài sẵn model vào cache local trước khi chạy worker."
+            ) from None
+        _whisper_model = model
+        _whisper_model_key = cache_key
+    return _whisper_model
+
+
+def transcribe(audio_path: Path, model_name: str, device: str) -> list[dict[str, Any]]:
+    model = ensure_whisper_model(model_name, device)
     # beam_size=1 (greedy) nhanh hơn ~2x so với beam_size=5 mặc định, đủ dùng với model tiny
     # vad_filter=False: Ngăn Silero VAD nuốt nhầm câu thoại khi có nhạc nền BGM
     parts, _ = model.transcribe(
@@ -499,19 +562,27 @@ def translate_to_vietnamese(text: str, slot_ms: int) -> tuple[str, bool]:
             if _nllb_components is None:
                 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
                 model_name = os.getenv("DUBVI_MT_MODEL", "Helsinki-NLP/opus-mt-zh-vi")
-                tokenizer = AutoTokenizer.from_pretrained(model_name)
-                model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+                try:
+                    tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
+                    model = AutoModelForSeq2SeqLM.from_pretrained(model_name, local_files_only=True)
+                except Exception:
+                    raise _OfflineModelLoadError(
+                        f"Translation model '{model_name}' không có hoặc không tải được từ local cache offline; "
+                        "hãy cài sẵn model vào cache local trước khi chạy worker."
+                    ) from None
                 _nllb_components = (tokenizer, model)
             tokenizer, model = _nllb_components
             inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=256)
             generated = model.generate(**inputs, max_new_tokens=128)
             translated = tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
-        except Exception as exc:
+        except _OfflineModelLoadError:
+            raise
+        except Exception:
             raise RuntimeError(
                 "Dịch máy local không khả dụng. Cài một lựa chọn trong "
                 "requirements-optional.txt (argostranslate hoặc transformers) "
                 "và model phù hợp, hoặc cấu hình LLM translation."
-            ) from exc
+            ) from None
     if not translated or translated == text:
         raise RuntimeError("Dịch không trả về tiếng Việt; hãy thử lại hoặc kiểm tra model/kết nối mạng.")
     translated = translated.strip()
@@ -577,6 +648,8 @@ def capcut_synthesize(text: str, voice: str, target: Path) -> None:
     last_error: Exception | None = None
 
     for attempt in range(1, 4):
+        staging = target.with_name(f".{target.name}.attempt-{attempt}.part")
+        staging.unlink(missing_ok=True)
         try:
             result = client.generate_speech(
                 texts=provider_text,
@@ -604,22 +677,27 @@ def capcut_synthesize(text: str, voice: str, target: Path) -> None:
                         or (payload.get("data") or {}).get("audio")
                     )
             if not audio_url:
-                raise RuntimeError(f"Không tìm thấy audio_url trong CapCut response: {payload}")
+                raise RuntimeError("CapCut response did not contain an audio URL")
             # Download MP3 về target
             import requests as _req
             resp = _req.get(audio_url, timeout=30)
             resp.raise_for_status()
             if len(resp.content) < 1024:
                 raise RuntimeError("CapCut TTS trả về file audio rỗng")
-            target.write_bytes(resp.content)
+            staging.write_bytes(resp.content)
+            if not staging.is_file() or staging.stat().st_size < 1024:
+                raise RuntimeError("CapCut TTS staging audio is unusable")
+            staging.replace(target)
             return
         except Exception as exc:
             last_error = exc
+            staging.unlink(missing_ok=True)
             time.sleep(attempt * 1.5)
 
+    error_type = type(last_error).__name__ if last_error is not None else "UnknownError"
     raise RuntimeError(
-        f"CapCut TTS thất bại sau 3 lần thử. Lỗi cuối: {last_error}"
-    ) from last_error
+        f"CapCut TTS thất bại sau 3 lần thử ({error_type})"
+    ) from None
 
 
 def piper_synthesize(text: str, voice: str, target: Path, settings: Settings) -> None:
@@ -629,30 +707,31 @@ def piper_synthesize(text: str, voice: str, target: Path, settings: Settings) ->
     _runtime_for_model(settings.piper_model).synthesize(text, target, settings.piper_speed)
 
 
+def validate_capcut_voice(voice: str) -> None:
+    """Reject an unresolved CapCut voice before a batch starts."""
+    if not isinstance(voice, str) or not voice.strip():
+        raise ValueError("CapCut voice must be nonblank")
+    try:
+        from capcut_tts_api.client import CapCutClient
+        CapCutClient().resolve_voice(voice=voice.strip())
+    except Exception as exc:
+        raise ValueError(f"CapCut voice is not resolvable: {voice!r}") from exc
+
+
 def synthesize(text: str, voice: str, target: Path, settings: Settings) -> None:
-    """Wrapper chọn TTS provider theo voice được chọn hoặc DUBVI_TTS_PROVIDER trong .env.
-
-    - Provider `piper` → Piper ONNX local, không phụ thuộc tên voice CapCut
-    - Giọng bắt đầu bằng `BV` (ví dụ `BV421_vivn_streaming`, `BV007_streaming`) → CapCut TTS
-    - Giọng bắt đầu bằng `vi-` (ví dụ `vi-VN-HoaiMyNeural`, `vi-VN-NamMinhNeural`) → Edge TTS
-    - CapCut/Edge chỉ chạy khi provider được chọn tương ứng.
-    """
-    actual_voice = voice if voice else settings.capcut_voice
-    if settings.tts_provider == "piper":
-        piper_synthesize(text, actual_voice, target, settings)
+    """Synthesize strictly through the configured provider branch."""
+    provider = validate_tts_provider(str(settings.tts_provider).strip().lower())
+    if provider == "piper":
+        piper_synthesize(text, voice or settings.capcut_voice, target, settings)
         return
-    if actual_voice.startswith("BV") or (settings.tts_provider == "capcut" and not actual_voice.startswith("vi-")):
-        try:
-            capcut_synthesize(text, actual_voice, target)
-            return
-        except Exception as exc:
-            logging.getLogger("dubvi-worker").warning(
-                "CapCut TTS lỗi (%s), fallback sang Edge TTS.", exc
-            )
-            actual_voice = "vi-VN-HoaiMyNeural"
-
-    # Edge TTS
-    edge_voice = actual_voice if actual_voice.startswith("vi-") else "vi-VN-HoaiMyNeural"
+    if provider == "capcut":
+        actual_voice = voice or settings.capcut_voice
+        validate_capcut_voice(actual_voice)
+        capcut_synthesize(text, actual_voice, target)
+        return
+    edge_voice = voice or "vi-VN-HoaiMyNeural"
+    if not edge_voice.startswith("vi-"):
+        raise ValueError(f"Edge voice must use a vi-* voice name: {edge_voice!r}")
     asyncio.run(edge_synthesize(text, edge_voice, target))
 
 
@@ -1351,10 +1430,19 @@ def process_job(
 def check_environment(settings: Settings) -> None:
     require_binary("ffmpeg")
     require_binary("ffprobe")
+    hf_home = os.environ.setdefault("HF_HOME", str(settings.model_dir / "huggingface"))
+    try:
+        ensure_whisper_model(settings.whisper_model, settings.device)
+    except Exception:
+        raise RuntimeError(
+            f"Whisper model '{settings.whisper_model}' không có hoặc không tải được từ local cache offline; "
+            f"HF_HOME hiệu lực: {Path(hf_home).expanduser().resolve()}"
+        ) from None
     print("✓ FFmpeg và FFprobe sẵn sàng")
     print(f"✓ Media directory: {settings.media_dir}")
     print(f"✓ Output directory: {settings.output_dir}")
     print(f"✓ Model cache: {settings.model_dir}")
+    print(f"✓ Hugging Face cache: {Path(hf_home).expanduser().resolve()}")
     print(f"✓ Worker logs: {settings.log_dir}")
     print(f"✓ Whisper device/model: {settings.device}/{settings.whisper_model}")
     print("! edge-tts gọi Microsoft TTS qua Internet; dùng Piper/Coqui nếu cần TTS hoàn toàn offline.")
