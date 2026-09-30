@@ -486,7 +486,7 @@ def draw_ass(
                 i_et = max_limit_ms
         st_str = ass_time(i_st)
         et_str = ass_time(i_et)
-        lines.append(f"Dialogue: 0,{st_str},{et_str},CleanBox,,0,0,0,{{\\fad(150,150)\\an7\\pos({box_left},{box_top})\\p1}}{pill_vector}{{\\p0}}")
+        lines.append(f"Dialogue: 0,{st_str},{et_str},CleanBox,,0,0,0,,{{\\fad(150,150)\\an7\\pos({box_left},{box_top})\\p1}}{pill_vector}{{\\p0}}")
 
     # Layer 1: Vẽ phụ đề tiếng Việt ngắn gọn (tối đa 1-2 dòng) nhảy nhịp nhàng theo thời gian âm thanh
     for seg in valid_segments:
@@ -512,7 +512,7 @@ def draw_ass(
             clean_text = "\\N".join(lines_list).replace("{", "\\{").replace("}", "\\}")
             st_str = ass_time(curr_st)
             et_str = ass_time(c_et)
-            lines.append(f"Dialogue: 1,{st_str},{et_str},CleanText,,0,0,0,{{\\an5\\pos({center_x},{common_cy})}}{clean_text}")
+            lines.append(f"Dialogue: 1,{st_str},{et_str},CleanText,,0,0,0,,{{\\an5\\pos({center_x},{common_cy})}}{clean_text}")
             curr_st = c_et
 
     path.write_text("\n".join(lines), encoding="utf-8")
