@@ -978,7 +978,8 @@ def render_video(
         "-c:v", "libx264", "-preset", "veryfast", "-threads", "2", "-crf", "20",
         "-c:a", "aac",
     ])
-    command.extend(build_render_command(str(source), str(output), str(ass_path), audio_segments, audio_mode, ffprobe_duration(source)))
+    effective_duration = float(kwargs.get("max_duration_s") or ffprobe_duration(source))
+    command.extend(build_render_command(str(source), str(output), str(ass_path), audio_segments, audio_mode, effective_duration))
     run(command)
 
 
