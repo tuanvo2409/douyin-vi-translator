@@ -814,75 +814,10 @@ def preserve_source_timeline(audio_clips: list[dict[str, Any]]) -> list[tuple[in
     return [(int(clip["startMs"]), clip["fitted_voice"]) for clip in audio_clips]
 
 
-def draw_ass(
-    segments: list[dict[str, Any]],
-    video_width: int,
-    video_height: int,
-    roi: dict[str, Any],
-    path: Path,
-    font_name: str = "Segoe UI",
-    font_size: int | None = None,
-    font_color: str = "#111111"
-) -> None:
-    """Vẽ phụ đề ASS Thẻ Trắng Bo Góc Đơn (Single White Pill Subtitle Card) chuẩn 1080p."""
-    if video_height >= video_width:
-        target_w, target_h = 1080, 1920
-    else:
-        target_w, target_h = 1920, 1080
-
-    center_x = target_w // 2
-    actual_font_size = font_size if font_size else 48
-    
-    # Tính tâm Y theo ROI hoặc mặc định 70%
-    if roi and "yPercent" in roi:
-        center_y = int(target_h * (roi.get("yPercent", 65.0) + roi.get("heightPercent", 10.0) / 2.0) / 100)
-    else:
-        center_y = int(target_h * 0.70)
-
-    lines = [
-        "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {target_w}", f"PlayResY: {target_h}",
-        "[V4+ Styles]",
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        "Style: CleanWhiteBox,Arial,10,&H00FFFFFF,&H00000000,&H00FFFFFF,&H00FFFFFF,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1",
-        f"Style: CleanBlackText,{font_name},{actual_font_size},&H00111111,&H00000000,&H00FFFFFF,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1",
-        "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
-    ]
-
-    def ass_time(value_ms: int) -> str:
-        hours, remainder = divmod(value_ms, 3_600_000)
-        minutes, remainder = divmod(remainder, 60_000)
-        seconds, milliseconds = divmod(remainder, 1000)
-        return f"{hours}:{minutes:02d}:{seconds:02d}.{milliseconds // 10:02d}"
-
-    for seg in segments:
-        st_ms = int(seg.get("startMs", 0))
-        et_ms = int(seg.get("endMs", st_ms + 1500))
-        vi_txt = seg.get("translatedTextVi", "").strip()
-        if not vi_txt:
-            continue
-
-        words = vi_txt.split()
-        if len(vi_txt) > 22 and len(words) > 3:
-            mid = len(words) // 2
-            formatted_vi = " ".join(words[:mid]) + r"\N" + " ".join(words[mid:])
-            num_lines = 2
-            max_line_len = max(len(" ".join(words[:mid])), len(" ".join(words[mid:])))
-        else:
-            formatted_vi = vi_txt
-            num_lines = 1
-            max_line_len = len(vi_txt)
-
-        box_w = max(950, int(max_line_len * actual_font_size * 0.58 + 80))
-        box_h = 135 if num_lines == 1 else 158
-
-        st_str = ass_time(st_ms)
-        et_str = ass_time(et_ms)
-
-        clean_text = formatted_vi.replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
-        lines.append(f"Dialogue: 0,{st_str},{et_str},CleanWhiteBox,,0,0,0,,{{\\pos({center_x},{center_y})\\p1}}{round_rect_ass(box_w, box_h, r=20)}{{\\p0}}")
-        lines.append(f"Dialogue: 1,{st_str},{et_str},CleanBlackText,,0,0,0,,{{\\pos({center_x},{center_y})}}{clean_text}")
-
-    path.write_text("\n".join(lines), encoding="utf-8")
+from dubvi_subtitle import (
+    round_rect_ass,
+    draw_ass,
+)
 
 
 def draw_srt(segments: list[dict[str, Any]], path: Path) -> None:
@@ -920,32 +855,61 @@ def render_video(
     roi: dict[str, Any],
     audio_mode: str,
     clean_bgm_path: Path | None = None,
+    logo_badge_path: Path | None = None,
+    logo_position: str = "left",
+    orig_audio_source: Path | None = None,
+    max_duration_s: float | None = None,
     **kwargs: Any
 ) -> None:
-    """Render video Master 1080p với Thẻ Trắng Bo Góc Đơn (Single White Pill) và hòa âm LUFS -14dB."""
+    """Render video Master 1080p với Thẻ Bo Góc Đơn Tinh Gọn, Logo Kênh động và hòa âm LUFS -14dB."""
     orig_w, orig_h = ffprobe_dimensions(source)
     
     # Chuẩn hóa độ phân giải xuất ra Full HD 1080p (Chuẩn TikTok/Reels/Shorts)
     if orig_h >= orig_w:
-        scale_filter = "scale=1080:1920"
+        scale_filter = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
     else:
-        scale_filter = "scale=1920:1080"
+        scale_filter = "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080"
 
     ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
-    video_filter = f"[0:v]{scale_filter},subtitles='{ass_escaped}'[video]"
+    video_filter = f"[0:v]{scale_filter},ass='{ass_escaped}'[v_sub]"
     
-    use_clean_bgm = clean_bgm_path and clean_bgm_path.is_file()
-    has_orig_audio = ffprobe_has_audio(source)
+    use_clean_bgm = clean_bgm_path and Path(clean_bgm_path).is_file()
+    bg_audio_file = orig_audio_source if (orig_audio_source and Path(orig_audio_source).is_file()) else source
+    has_orig_audio = ffprobe_has_audio(bg_audio_file)
+    
     command = ["ffmpeg", "-y", "-i", str(source)]
+    curr_offset = 1
+
+    if bg_audio_file != source and has_orig_audio:
+        command.extend(["-i", str(bg_audio_file)])
+        bg_audio_idx = curr_offset
+        curr_offset += 1
+    else:
+        bg_audio_idx = 0
+
+    clean_bgm_idx = None
     if use_clean_bgm:
-        command.extend(["-i", str(clean_bgm_path)])
+        clean_bgm_idx = curr_offset
+        command.extend(["-stream_loop", "-1", "-i", str(clean_bgm_path)])
+        curr_offset += 1
         
     audio_labels: list[str] = []
-    audio_offset = 2 if use_clean_bgm else 1
-    for index, (audio_path, offset_ms) in enumerate(audio_segments, start=audio_offset):
+    for index, (audio_path, offset_ms) in enumerate(audio_segments, start=curr_offset):
         command.extend(["-i", str(audio_path)])
-        idx_name = index - audio_offset + 1
+        idx_name = index - curr_offset + 1
         audio_labels.append(f"[{index}:a]adelay={offset_ms}|{offset_ms}[v{idx_name}]")
+
+    # Xử lý chèn Logo Avatar Kênh động
+    has_logo = logo_badge_path and Path(logo_badge_path).exists()
+    if has_logo:
+        logo_idx = curr_offset + len(audio_segments)
+        command.extend(["-i", str(logo_badge_path)])
+        if logo_position == "right":
+            video_filter += f";[v_sub][{logo_idx}:v]overlay=x=main_w-overlay_w-45:y=95:format=auto[video]"
+        else:
+            video_filter += f";[v_sub][{logo_idx}:v]overlay=x=45:y=95:format=auto[video]"
+    else:
+        video_filter = video_filter.replace("[v_sub]", "[video]")
 
     filters = [video_filter]
     if audio_labels:
@@ -956,29 +920,38 @@ def render_video(
             mix_voice = f"{';'.join(audio_labels)};{inputs}amix=inputs={len(audio_segments)}:duration=longest:normalize=0[voice]"
 
         if use_clean_bgm:
-            # Dùng nhạc nền AI tách sạch tiếng Trung + chuẩn hóa âm lượng Mobile LUFS -14dB
-            filters.append(f"{mix_voice};[1:a]volume=0.85[bgm];[bgm][voice]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
-        elif audio_mode == "duck" and has_orig_audio:
-            # Đệm nhạc nền nhẹ 8-10% lọc bớt giọng nói cũ + chuẩn hóa âm lượng Mobile LUFS -14dB
-            filters.append(f"{mix_voice};[0:a]volume=0.08,lowpass=f=3000[bg];[bg][voice]amix=inputs=2:duration=longest:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
+            # Dùng nhạc nền BGM Viral (volume 0.18) + fade-in 0.5s + chuẩn hóa âm lượng Mobile LUFS -14dB
+            filters.append(f"{mix_voice};[{clean_bgm_idx}:a]volume=0.18,afade=t=in:st=0:d=0.5[bgm];[voice][bgm]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio_pre]")
+        elif audio_mode in ("duck", "ducking") and has_orig_audio:
+            # Triệt tiêu giọng Trung 99% (volume 0.01 + lowpass 2000Hz) + giọng CapCut đĩnh đạc
+            filters.append(f"{mix_voice};[{bg_audio_idx}:a]volume=0.01,lowpass=f=2000[bg];[bg][voice]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio_pre]")
         elif audio_mode == "keep" and has_orig_audio:
-            filters.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
+            filters.append(f"[{bg_audio_idx}:a]loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio_pre]")
         else:
-            # Replace: chỉ dùng voice + chuẩn hóa âm lượng Mobile LUFS -14dB
-            filters.append(f"{mix_voice};[voice]loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
+            filters.append(f"{mix_voice};[voice]apad,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio_pre]")
     else:
         if has_orig_audio:
-            filters.append("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio]")
+            filters.append(f"[{bg_audio_idx}:a]loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio_pre]")
         else:
-            filters.append("aevalsrc=0:d=1[finalaudio]")
+            filters.append("aevalsrc=0:d=1[finalaudio_pre]")
+
+    # Áp dụng audio fade-out 0.5s ở đuôi nếu có giới hạn thời lượng (cắt sạch Outro CTA Douyin)
+    effective_max_duration = max_duration_s if max_duration_s is not None else kwargs.get("max_duration_s")
+    if effective_max_duration is not None and float(effective_max_duration) > 0:
+        eff_max = float(effective_max_duration)
+        fade_start = max(0.0, eff_max - 0.5)
+        fade_dur = min(0.5, eff_max)
+        filters.append(f"[finalaudio_pre]afade=t=out:st={fade_start:.3f}:d={fade_dur:.3f}[finalaudio]")
+    else:
+        filters.append("[finalaudio_pre]anull[finalaudio]")
 
     command.extend([
         "-filter_complex", ";".join(filters),
         "-map", "[video]", "-map", "[finalaudio]",
-        "-c:v", "libx264", "-preset", "veryfast", "-threads", "2", "-crf", "20",
-        "-c:a", "aac",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-threads", "2", "-crf", "20",
+        "-c:a", "aac"
     ])
-    effective_duration = float(kwargs.get("max_duration_s") or ffprobe_duration(source))
+    effective_duration = float(effective_max_duration or ffprobe_duration(source))
     command.extend(build_render_command(str(source), str(output), str(ass_path), audio_segments, audio_mode, effective_duration))
     run(command)
 
