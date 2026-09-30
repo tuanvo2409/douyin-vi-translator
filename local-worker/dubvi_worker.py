@@ -735,18 +735,15 @@ def synthesize(text: str, voice: str, target: Path, settings: Settings) -> None:
     asyncio.run(edge_synthesize(text, edge_voice, target))
 
 
-def fit_voice(source_audio: Path, target_audio: Path, slot_ms: int, max_tempo: float) -> tuple[int, bool]:
+def fit_voice(source_audio: Path, target_audio: Path, slot_ms: int, max_tempo: float = 1.35) -> tuple[int, bool]:
     original_ms = int(ffprobe_duration(source_audio) * 1000)
     if original_ms <= slot_ms:
         shutil.copy2(source_audio, target_audio)
         return original_ms, False
     required_tempo = original_ms / max(1, slot_ms)
-    if required_tempo > max_tempo:
-        # Preserve the natural audio for manual editing instead of silently producing robotic speech.
-        shutil.copy2(source_audio, target_audio)
-        return original_ms, True
-    run(["ffmpeg", "-y", "-i", str(source_audio), "-filter:a", f"atempo={required_tempo:.4f}", str(target_audio)])
-    return int(ffprobe_duration(target_audio) * 1000), False
+    effective_tempo = min(required_tempo, max_tempo)
+    run(["ffmpeg", "-y", "-i", str(source_audio), "-filter:a", f"atempo={effective_tempo:.4f}", str(target_audio)])
+    return int(ffprobe_duration(target_audio) * 1000), required_tempo > max_tempo
 
 
 def round_rect_ass(w: int, h: int, r: int = 20) -> str:
@@ -922,9 +919,9 @@ def render_video(
         if use_clean_bgm:
             # Dùng nhạc nền BGM Viral (volume 0.18) + fade-in 0.5s + chuẩn hóa âm lượng Mobile LUFS -14dB
             filters.append(f"{mix_voice};[{clean_bgm_idx}:a]volume=0.18,afade=t=in:st=0:d=0.5[bgm];[voice][bgm]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio_pre]")
-        elif audio_mode in ("duck", "ducking") and has_orig_audio:
-            # Triệt tiêu giọng Trung 99% (volume 0.01 + lowpass 2000Hz) + giọng CapCut đĩnh đạc
-            filters.append(f"{mix_voice};[{bg_audio_idx}:a]volume=0.01,lowpass=f=2000[bg];[bg][voice]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio_pre]")
+        elif audio_mode in ("duck", "ducking"):
+            # Triệt tiêu 100% giọng Trung gốc khi không có BGM (tránh loudnorm khuếch đại tiếng lạ ở khoảng lặng đầu)
+            filters.append(f"{mix_voice};[voice]apad,loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio_pre]")
         elif audio_mode == "keep" and has_orig_audio:
             filters.append(f"[{bg_audio_idx}:a]loudnorm=I=-14:TP=-1.5:LRA=11[finalaudio_pre]")
         else:
