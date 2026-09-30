@@ -26,7 +26,12 @@ class TimelineCorrectionTests(unittest.TestCase):
 class MaskCorrectionTests(unittest.TestCase):
     def test_plan_keeps_regions_after_the_old_global_limit(self) -> None:
         detections = [
-            {"timestampMs": index * 1000, "text": "字幕", "bbox": (10, 10, 40, 30)}
+            {
+                "timestampMs": index * 1000,
+                "text": "字幕",
+                "bbox": (10, 10, 40, 30),
+                "category": "DIALOGUE_SUBTITLE",
+            }
             for index in range(70)
         ]
         plan = localized_masking.build_mask_plan(detections, (100, 100))
@@ -50,7 +55,10 @@ class MaskCorrectionTests(unittest.TestCase):
 
     def test_targeted_repair_expands_only_residual_tracks_once(self) -> None:
         initial = [{"timestampMs": 1000, "bbox": (100, 100, 140, 120)}, {"timestampMs": 5000, "bbox": (400, 400, 440, 420)}]
-        residual = [{"timestampMs": 1000, "text": "残", "bbox": (102, 102, 138, 118)}]
+        residual = [{
+            "timestampMs": 1000, "text": "残", "bbox": (102, 102, 138, 118),
+            "category": "DIALOGUE_SUBTITLE",
+        }]
         retry = localized_masking.expand_affected_plan(initial, residual, (1000, 1000))
         self.assertEqual(1, len(retry))
         self.assertEqual(1000, retry[0]["timestampMs"])

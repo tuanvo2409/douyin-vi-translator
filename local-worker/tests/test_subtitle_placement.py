@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -45,6 +46,8 @@ def _evidence(
         "startMs": start,
         "endMs": end,
         "bbox": bbox if bbox is not None else [120, 730, 600, 770],
+        "text": "源字幕",
+        "subtitleZh": "源字幕",
     }
 
 
@@ -71,6 +74,31 @@ class SubtitlePlacementTests(unittest.TestCase):
         cue = layout_subtitles([_cue()], placement_evidence=[_evidence("UNKNOWN")], source_to_output=_timeline())["displayCues"][0]
         self.assertTrue(cue["fallbackUsed"])
         self.assertIsNone(cue["sourceDialogueTrackId"])
+
+    def test_untrusted_page2_evidence_uses_explicit_bottom_fallback(self) -> None:
+        cases = [
+            _evidence("WATERMARK"),
+            _evidence("STORY_TEXT"),
+            _evidence("UNKNOWN"),
+            {**_evidence(), "text": "不同的字幕", "subtitleZh": "原字幕"},
+            {key: value for key, value in _evidence().items() if key != "bbox"},
+        ]
+        for evidence in cases:
+            with self.subTest(evidence=evidence):
+                cue = layout_subtitles(
+                    [_cue()], placement_evidence=[evidence], source_to_output=_timeline()
+                )["displayCues"][0]
+                self.assertEqual("V5_FALLBACK_BOTTOM", cue["anchorSource"])
+                self.assertTrue(cue["fallbackUsed"])
+                self.assertIsNone(cue["sourceDialogueTrackId"])
+                self.assertIsNone(cue["sourceAnchorYPx"])
+
+    def test_missing_source_timeline_cannot_claim_a_source_anchor(self) -> None:
+        cue = layout_subtitles([_cue()], placement_evidence=[_evidence()])["displayCues"][0]
+        self.assertEqual("V5_FALLBACK_BOTTOM", cue["anchorSource"])
+        self.assertEqual("SOURCE_TIMELINE_MISSING", cue["fallbackReason"])
+        self.assertTrue(cue["fallbackUsed"])
+        self.assertIsNone(cue["sourceAnchorYPx"])
 
     def test_low_confidence_dialogue_does_not_anchor(self) -> None:
         evidence = _evidence()
@@ -193,6 +221,26 @@ class SubtitlePlacementTests(unittest.TestCase):
         result = layout_subtitles([_cue()], placement_evidence=[_evidence()], source_to_output=_timeline())
         ass = render_ass_document(result["displayCues"], policy)
         self.assertIn(r"\pos(360,750)", ass)
+
+    def test_page1_fixed_mask_box_remains_the_placement_authority(self) -> None:
+        from subtitle_layout import write_ass_subtitles
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = write_ass_subtitles(
+                [_cue()],
+                Path(directory) / "page1-fixed-box.ass",
+                width=720,
+                height=960,
+                page1_mask_bbox=(100, 700, 620, 850),
+                placement_evidence=[_evidence()],
+                source_to_output=_timeline(),
+            )
+        cue = result["displayCues"][0]
+        self.assertEqual("V5_FALLBACK_BOTTOM", cue["anchorSource"])
+        self.assertGreaterEqual(cue["boxLeftPx"], 100)
+        self.assertLessEqual(cue["boxRightPx"], 620)
+        self.assertGreaterEqual(cue["boxTopPx"], 700)
+        self.assertLessEqual(cue["boxBottomPx"], 850)
 
     def test_production_placement_logic_is_not_fixture_specific(self) -> None:
         source = Path(__file__).resolve().parents[1] / "subtitle_layout.py"

@@ -31,7 +31,7 @@ def build_mask_plan(detections: list[dict[str, Any]], frame_size: tuple[int, int
         if (
             not isinstance(detection, dict)
             or not contains_cjk_text(detection.get("text"))
-            or _normalize_category(detection.get("category")) not in (None, *_MASK_CATEGORIES)
+            or _normalize_category(detection.get("category")) not in _MASK_CATEGORIES
         ):
             continue
         timestamp = detection.get("timestampMs")
@@ -43,7 +43,7 @@ def build_mask_plan(detections: list[dict[str, Any]], frame_size: tuple[int, int
         for group in group_cjk_regions(items, frame_size):
             item: dict[str, Any] = {"timestampMs": timestamp, "bbox": dilate_region(group["bbox"], frame_size)}
             categories = {_normalize_category(detection.get("category")) for detection in group["detections"]}
-            if len(categories) == 1 and None not in categories:
+            if len(categories) == 1 and categories <= _MASK_CATEGORIES:
                 item["category"] = categories.pop()
             plan.append(item)
     return plan

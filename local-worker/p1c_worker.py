@@ -94,7 +94,8 @@ def run_lease_aware_work(
             return _lease_lost(handle, document, lease_id, settings, occurred_at_utc)
         current_monotonic = monotonic()
         if current_monotonic < next_heartbeat:
-            sleep(max(0.0, next_heartbeat - current_monotonic))
+            sleep(min(0.25, next_heartbeat - current_monotonic))
+            continue
         try:
             renewed = lease_client.heartbeat(document, lease_id)
             if renewed.lease is None:

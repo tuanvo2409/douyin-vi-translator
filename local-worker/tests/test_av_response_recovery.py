@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 import tempfile
 import unittest
@@ -53,7 +54,18 @@ def _window_av(start_ms: int, end_ms: int, text: str = "原文") -> dict[str, ob
     }
 
 
+def _bounded_test_clip(_path: Path, start_ms: int, end_ms: int) -> bytes:
+    return f"bounded:{start_ms}:{end_ms}".encode("ascii")
+
+
 class AvResponseRecoveryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._ambient_groq_key = os.environ.pop("GROQ_API_KEY", None)
+
+    def tearDown(self) -> None:
+        if self._ambient_groq_key is not None:
+            os.environ["GROQ_API_KEY"] = self._ambient_groq_key
+
     def _analyzer(self, responses):
         calls = []
         remaining = list(responses)
@@ -66,7 +78,9 @@ class AvResponseRecoveryTests(unittest.TestCase):
             return value
 
         transport = llm_transport.StructuredGeminiTransport(request=request)
-        return av_analyzer.GeminiAVAnalyzer(transport=transport, model="test-model"), calls
+        return av_analyzer.GeminiAVAnalyzer(
+            transport=transport, model="test-model", allow_cloud_upload=True, clip_extractor=_bounded_test_clip,
+        ), calls
 
     def _media(self, directory: str) -> Path:
         path = Path(directory) / "source.mp4"
@@ -374,7 +388,9 @@ class AvWindowSubdivisionTests(unittest.TestCase):
             return value
 
         transport = llm_transport.StructuredGeminiTransport(request=request)
-        return av_analyzer.GeminiAVAnalyzer(transport=transport, model="test-model"), calls
+        return av_analyzer.GeminiAVAnalyzer(
+            transport=transport, model="test-model", allow_cloud_upload=True, clip_extractor=_bounded_test_clip,
+        ), calls
 
     def _media(self, directory: str) -> Path:
         path = Path(directory) / "source.mp4"
@@ -608,6 +624,13 @@ class AvWindowSubdivisionTests(unittest.TestCase):
 
 
 class AvTransportRetryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._ambient_groq_key = os.environ.pop("GROQ_API_KEY", None)
+
+    def tearDown(self) -> None:
+        if self._ambient_groq_key is not None:
+            os.environ["GROQ_API_KEY"] = self._ambient_groq_key
+
     def _analyzer(self, responses, sleeps=None, *, max_transport_attempts=3):
         calls = []
         remaining = list(responses)
@@ -624,7 +647,9 @@ class AvTransportRetryTests(unittest.TestCase):
             max_transport_attempts=max_transport_attempts,
             sleeper=(sleeps.append if sleeps is not None else (lambda _delay: None)),
         )
-        return av_analyzer.GeminiAVAnalyzer(transport=transport, model="test-model"), calls
+        return av_analyzer.GeminiAVAnalyzer(
+            transport=transport, model="test-model", allow_cloud_upload=True, clip_extractor=_bounded_test_clip,
+        ), calls
 
     def _media(self, directory: str) -> Path:
         path = Path(directory) / "source.mp4"

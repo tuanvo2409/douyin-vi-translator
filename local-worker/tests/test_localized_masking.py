@@ -14,12 +14,28 @@ import localized_masking
 class LocalizedMaskPlanTests(unittest.TestCase):
     def test_plan_retains_cjk_geometry_but_omits_ocr_text_from_diagnostics(self) -> None:
         plan = localized_masking.build_mask_plan([
-            {"timestampMs": 500, "text": "中文字幕", "bbox": (100, 200, 300, 240), "confidence": 0.9},
+            {"timestampMs": 500, "text": "中文字幕", "bbox": (100, 200, 300, 240), "confidence": 0.9, "category": "DIALOGUE_SUBTITLE"},
             {"timestampMs": 500, "text": "latin", "bbox": (400, 200, 500, 240), "confidence": 0.9},
         ], frame_size=(1080, 1920))
         self.assertEqual(1, len(plan))
         self.assertEqual((94, 190, 306, 250), plan[0]["bbox"])
         self.assertNotIn("text", plan[0])
+
+    def test_mask_plan_excludes_story_unknown_and_unclassified_cjk(self) -> None:
+        plan = localized_masking.build_mask_plan([
+            {"timestampMs": 100, "text": "剧情标题", "bbox": (100, 700, 300, 740), "category": "STORY_TEXT"},
+            {"timestampMs": 200, "text": "无法判断", "bbox": (100, 700, 300, 740), "category": "UNKNOWN"},
+            {"timestampMs": 300, "text": "未分类字幕", "bbox": (100, 700, 300, 740)},
+        ], frame_size=(1080, 1920))
+        self.assertEqual([], plan)
+
+    def test_watermark_like_text_never_becomes_dialogue_mask(self) -> None:
+        plan = localized_masking.build_mask_plan([
+            {"timestampMs": 100, "text": "频道标记", "bbox": (100, 700, 300, 740), "category": "PERSISTENT_WATERMARK"},
+        ], frame_size=(1080, 1920))
+        self.assertTrue(plan)
+        self.assertNotIn("DIALOGUE_SUBTITLE", {item.get("category") for item in plan})
+        self.assertEqual({"WATERMARK"}, {item.get("category") for item in plan})
 
     def test_clean_plate_is_used_only_for_a_similar_localized_region(self) -> None:
         frame = np.full((80, 100, 3), 120, dtype=np.uint8)

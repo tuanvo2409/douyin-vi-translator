@@ -6,6 +6,8 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import subprocess
+import tempfile
 from typing import Callable, Mapping, Sequence
 
 from llm_transport import ProviderError, StructuredGeminiTransport, StructuredResponseError, gemini_json_transport
@@ -13,6 +15,9 @@ from llm_transport import ProviderError, StructuredGeminiTransport, StructuredRe
 MAX_WINDOW_MS = 30_000
 WINDOW_OVERLAP_MS = 5_000
 MAX_DIAGNOSTIC_BYTES = 64 * 1024
+MAX_CLOUD_CLIP_BYTES = 16 * 1024 * 1024
+FFMPEG_TIMEOUT_SECONDS = 30
+_CLOUD_UPLOAD_ENV = "DUBVI_CLOUD_AV_UPLOAD"
 _AV_KEYS = {"windowStartMs", "windowEndMs", "scene", "utterances", "visualOnly"}
 _SCENE_KEYS = {"summary", "tone", "register"}
 _UTTERANCE_KEYS = {
@@ -50,7 +55,69 @@ _RECOVERY_KEYS = (
     "rateLimitClassification",
     "rateLimitMetadata",
     "finalStatus",
+    "clipStartMs",
+    "clipEndMs",
+    "clipBytes",
 )
+
+
+class AVClipExtractionError(RuntimeError):
+    """A bounded source clip could not be created or verified."""
+
+
+def _cloud_upload_enabled() -> bool:
+    return os.environ.get(_CLOUD_UPLOAD_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _extract_bounded_clip_bytes(media_path: Path, start_ms: int, end_ms: int) -> bytes:
+    """Extract exactly one verified temporary clip for one absolute source window."""
+    if not media_path.is_file() or media_path.is_symlink() or media_path.stat().st_size <= 0:
+        raise AVClipExtractionError("AV source media is not a usable regular file")
+    if not isinstance(start_ms, int) or not isinstance(end_ms, int) or end_ms <= start_ms:
+        raise AVClipExtractionError("AV clip window is invalid")
+    workspace = Path(tempfile.mkdtemp(prefix="dubvi-av-window-"))
+    clip_path = workspace / "window.mp4"
+    duration_ms = end_ms - start_ms
+    try:
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", str(media_path), "-ss", f"{start_ms / 1000:.3f}",
+                    "-t", f"{duration_ms / 1000:.3f}", "-map", "0:v:0", "-map", "0:a?",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+                    "-c:a", "aac", "-b:a", "128k", "-avoid_negative_ts", "make_zero", "-movflags", "+faststart",
+                    str(clip_path),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=FFMPEG_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            raise AVClipExtractionError(
+                "AV_CLIP_EXTRACTION_TIMEOUT: bounded AV clip extraction timeout"
+            ) from None
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise AVClipExtractionError("bounded AV clip extraction failed") from error
+        if not clip_path.is_file() or clip_path.is_symlink():
+            raise AVClipExtractionError("bounded AV clip extraction produced no regular file")
+        clip_size = clip_path.stat().st_size
+        if clip_size <= 0:
+            raise AVClipExtractionError("bounded AV clip extraction produced no regular file")
+        if clip_size > MAX_CLOUD_CLIP_BYTES:
+            raise AVClipExtractionError("AV_CLIP_TOO_LARGE")
+        return clip_path.read_bytes()
+    finally:
+        try:
+            workspace_resolved = workspace.resolve()
+            clip_resolved = clip_path.resolve(strict=False)
+            if clip_path.is_file() and not clip_path.is_symlink() and clip_resolved.parent == workspace_resolved:
+                clip_path.unlink()
+            if workspace.is_dir() and not any(workspace.iterdir()):
+                workspace.rmdir()
+        except OSError:
+            # The clip remains recoverable for operator inspection if cleanup itself fails.
+            pass
 
 AV_RESPONSE_SCHEMA = {
     "type": "OBJECT",
@@ -550,6 +617,14 @@ def _valid_window_status(prefix: str, recovery: Mapping[str, object]) -> str:
     return prefix + "_SCHEMA_VALID_AFTER_RETRY"
 
 
+def _clip_diagnostics(recovery: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "clipStartMs": recovery.get("clipStartMs"),
+        "clipEndMs": recovery.get("clipEndMs"),
+        "clipBytes": recovery.get("clipBytes", 0),
+    }
+
+
 def _merge_analysis_documents(
     documents: Sequence[Mapping[str, object]],
     start_ms: int,
@@ -613,6 +688,7 @@ def persist_subdivision_diagnostics(path: Path, document: Mapping[str, object]) 
                     "fallbackInvoked", "fallbackProvider", "fallbackModel", "fallbackFrameCount",
                     "fallbackTranscriptContextUsed", "fallbackSchemaValidationStatus", "fallbackFailureClass",
                     "fallbackTransportAttempts", "rateLimitClassification", "rateLimitMetadata",
+                    "clipStartMs", "clipEndMs", "clipBytes",
                 )
             })
         safe_windows.append({
@@ -625,6 +701,7 @@ def persist_subdivision_diagnostics(path: Path, document: Mapping[str, object]) 
                 "boundaryNormalizationApplied", "fallbackInvoked", "fallbackProvider", "fallbackModel",
                 "fallbackFrameCount", "fallbackTranscriptContextUsed", "fallbackSchemaValidationStatus",
                 "fallbackFailureClass", "fallbackTransportAttempts", "rateLimitClassification", "rateLimitMetadata",
+                "clipStartMs", "clipEndMs", "clipBytes",
             )
         } | {"children": safe_children})
     safe = {
@@ -651,9 +728,13 @@ class GeminiAVAnalyzer:
         model: str | None = None,
         groq_transport: object | None = None,
         groq_frame_extractor: Callable[[Path, int], bytes] | None = None,
+        allow_cloud_upload: bool | None = None,
+        clip_extractor: Callable[[Path, int, int], bytes] | None = None,
     ) -> None:
         self.model = model or os.environ.get("DUBVI_AV_MODEL", "gemini-2.5-flash")
         self.transport = transport or gemini_json_transport(model=self.model)
+        self.allow_cloud_upload = bool(allow_cloud_upload) if allow_cloud_upload is not None else _cloud_upload_enabled()
+        self.clip_extractor = clip_extractor
         self.groq_transport = groq_transport
         self.groq_frame_extractor = groq_frame_extractor
         self.groq_analyzer = None
@@ -746,6 +827,17 @@ class GeminiAVAnalyzer:
         if path is not None:
             persist_recovery_diagnostics(path, self.last_recovery)
 
+    def _window_media(self, media_path: Path, start_ms: int, end_ms: int) -> bytes:
+        if not self.allow_cloud_upload:
+            raise ProviderError("CLOUD_AV_UPLOAD_CONSENT_REQUIRED")
+        extractor = self.clip_extractor or _extract_bounded_clip_bytes
+        media = extractor(media_path, start_ms, end_ms)
+        if not isinstance(media, (bytes, bytearray)) or not media:
+            raise AVClipExtractionError("bounded AV clip is empty")
+        if len(media) > MAX_CLOUD_CLIP_BYTES:
+            raise AVClipExtractionError("AV_CLIP_TOO_LARGE")
+        return bytes(media)
+
     def analyze_media(
         self,
         media_path: Path,
@@ -758,7 +850,6 @@ class GeminiAVAnalyzer:
     ) -> dict[str, object]:
         if end_ms is None or end_ms - start_ms > MAX_WINDOW_MS:
             raise ValueError("AV analysis window must be at most 30 seconds")
-        media = media_path.read_bytes()
         self.last_recovery = {
             "windowStartMs": start_ms,
             "windowEndMs": end_ms,
@@ -787,8 +878,22 @@ class GeminiAVAnalyzer:
             "rateLimitClassification": None,
             "rateLimitMetadata": {},
             "finalStatus": "RUNNING",
+            "clipStartMs": start_ms,
+            "clipEndMs": end_ms,
+            "clipBytes": 0,
         }
         try:
+            try:
+                media = self._window_media(media_path, start_ms, end_ms)
+            except ProviderError:
+                self.last_recovery["finalStatus"] = "AV_CLOUD_UPLOAD_CONSENT_REQUIRED"
+                raise
+            except AVClipExtractionError as error:
+                status = "AV_CLIP_TOO_LARGE" if str(error) == "AV_CLIP_TOO_LARGE" else "AV_CLIP_EXTRACTION_FAILED"
+                self.last_recovery["finalStatus"] = status
+                self.last_recovery["failureClass"] = status
+                raise
+            self.last_recovery["clipBytes"] = len(media)
             structural_failure = False
             for attempt in range(2):
                 self.last_recovery["attemptCount"] = attempt + 1
@@ -1005,6 +1110,7 @@ def analyze_media_windows_with_subdivision(
             )
         except ProviderError as error:
             recovery = dict(analyzer.last_recovery)
+            entry.update(_clip_diagnostics(recovery))
             logical_count, transport_count = record_accounting(recovery)
             entry.update({
                 "attemptCount": logical_count,
@@ -1027,6 +1133,7 @@ def analyze_media_windows_with_subdivision(
             raise
         except AVResponseRecoveryError as error:
             recovery = dict(analyzer.last_recovery)
+            entry.update(_clip_diagnostics(recovery))
             parent_attempts, parent_transport_attempts = record_accounting(recovery)
             entry.update({
                 "attemptCount": parent_attempts,
@@ -1081,6 +1188,7 @@ def analyze_media_windows_with_subdivision(
                     )
                 except ProviderError as child_error:
                     recovery = dict(analyzer.last_recovery)
+                    child.update(_clip_diagnostics(recovery))
                     attempts, transport_attempts = record_accounting(recovery, child=True)
                     child.update({
                         "attemptCount": attempts,
@@ -1104,6 +1212,7 @@ def analyze_media_windows_with_subdivision(
                     raise
                 except AVResponseRecoveryError as child_error:
                     recovery = dict(analyzer.last_recovery)
+                    child.update(_clip_diagnostics(recovery))
                     attempts, transport_attempts = record_accounting(recovery, child=True)
                     child.update({
                         "attemptCount": attempts,
@@ -1125,6 +1234,7 @@ def analyze_media_windows_with_subdivision(
                     raise
                 else:
                     recovery = dict(analyzer.last_recovery)
+                    child.update(_clip_diagnostics(recovery))
                     attempts, transport_attempts = record_accounting(recovery, child=True)
                     child.update({
                         "attemptCount": attempts,
@@ -1153,6 +1263,7 @@ def analyze_media_windows_with_subdivision(
             entry["status"] = "AV_WINDOW_SUBDIVISION_SUCCEEDED"
         else:
             recovery = dict(analyzer.last_recovery)
+            entry.update(_clip_diagnostics(recovery))
             attempts, transport_attempts = record_accounting(recovery)
             entry.update({
                 "attemptCount": attempts,

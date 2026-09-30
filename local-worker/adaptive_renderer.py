@@ -8,6 +8,7 @@ video timeline, then builds a local FFmpeg command with dubbed audio only.
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -111,6 +112,7 @@ def build_adaptive_ffmpeg_command(
     width: int,
     height: int,
     ffmpeg_binary: str = "ffmpeg",
+    mask_overlay: Path | None = None,
 ) -> list[str]:
     """Build a portable H.264/AAC command with all source intervals rendered once."""
 
@@ -125,6 +127,8 @@ def build_adaptive_ffmpeg_command(
     if not isinstance(segments, list) or not segments:
         raise AdaptiveRenderError("adaptive timeline segments are missing")
     _validate_render_segments(segments)
+    if mask_overlay is not None and (not mask_overlay.is_file() or mask_overlay.stat().st_size == 0):
+        raise AdaptiveRenderError("Page 1 mask overlay is not a regular file")
 
     filters: list[str] = []
     visual_labels: list[str] = []
@@ -144,11 +148,18 @@ def build_adaptive_ffmpeg_command(
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p[{label}]"
         )
     filters.append("".join(visual_labels) + f"concat=n={len(visual_labels)}:v=1:a=0[vbase]")
-    filters.append(f"[vbase]subtitles='{_filter_path(ass_path)}'[vout]")
+    if mask_overlay is not None:
+        filters.append("[vbase][1:v]overlay=x=0:y=0:eof_action=repeat:shortest=0[vmasked]")
+        filters.append(f"[vmasked]subtitles='{_filter_path(ass_path)}'[vout]")
+    else:
+        filters.append(f"[vbase]subtitles='{_filter_path(ass_path)}'[vout]")
 
     audio_labels: list[str] = []
     command = [ffmpeg_binary, "-hide_banner", "-y", "-i", str(source)]
-    for index, (audio_path, start_ms) in enumerate(voice_inputs, start=1):
+    if mask_overlay is not None:
+        command.extend(["-loop", "1", "-i", str(mask_overlay)])
+    audio_start = 2 if mask_overlay is not None else 1
+    for index, (audio_path, start_ms) in enumerate(voice_inputs, start=audio_start):
         if not isinstance(start_ms, int) or isinstance(start_ms, bool) or start_ms < 0:
             raise AdaptiveRenderError("voice start must be a non-negative integer")
         command.extend(["-i", str(audio_path)])
@@ -178,7 +189,18 @@ def render_adaptive(command: Sequence[str]) -> None:
     """Execute one local FFmpeg render and retain its detailed stderr at the caller boundary."""
 
     try:
-        subprocess.run(list(command), check=True)
+        # The canonical child returns a small JSON receipt over stdout; FFmpeg's
+        # progress must be drained here or the parent's pipe can block the render.
+        args = list(command)
+        if sum(len(part) + 1 for part in args) > 30000 and "-filter_complex" in args:
+            with tempfile.TemporaryDirectory(prefix="dubvi-filter-") as directory:
+                index = args.index("-filter_complex")
+                script = Path(directory) / "graph.txt"
+                script.write_text(args[index + 1], encoding="utf-8")
+                args[index:index + 2] = ["-filter_complex_script", str(script)]
+                subprocess.run(args, check=True, capture_output=True)
+        else:
+            subprocess.run(args, check=True, capture_output=True)
     except (OSError, subprocess.CalledProcessError) as exc:
         raise AdaptiveRenderError("adaptive FFmpeg render failed") from exc
 

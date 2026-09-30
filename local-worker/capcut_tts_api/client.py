@@ -33,14 +33,13 @@ def _checked_json_response(resp: Any, label: str) -> Dict[str, Any]:
         data = resp.json()
     except Exception as exc:
         raise CapCutAPIError(
-            f"{label} returned non-JSON HTTP {resp.status_code}: {resp.text[:500]}",
+            f"{label} returned non-JSON HTTP {resp.status_code}",
             status_code=resp.status_code,
         ) from exc
     if resp.status_code >= 400:
         raise CapCutAPIError(
-            f"{label} HTTP {resp.status_code}: {data}",
+            f"{label} HTTP {resp.status_code}",
             status_code=resp.status_code,
-            response_data=data,
         )
     return data
 
@@ -363,7 +362,7 @@ class CapCutClient:
 
         tasks = (create_res.get("data") or {}).get("tasks") or []
         if not tasks:
-            raise CapCutTaskError(f"No task returned from API: {create_res}")
+            raise CapCutTaskError("No task returned from CapCut API")
 
         task_id = tasks[0]["id"]
         token = tasks[0]["token"]
@@ -377,7 +376,7 @@ class CapCutClient:
                 if status in ("success", "succeed"):
                     return query_res
                 elif status in ("failed", "error"):
-                    raise CapCutTaskError(f"TTS Task failed: {query_res}")
+                    raise CapCutTaskError("CapCut TTS task failed")
             time.sleep(poll_interval)
 
         raise CapCutTaskError(f"TTS Task timed out after {timeout} seconds")
@@ -453,7 +452,7 @@ class CapCutClient:
 
         tasks = (stt_res.get("data") or {}).get("tasks") or []
         if not tasks:
-            raise CapCutTaskError(f"No STT task returned from API: {stt_res}")
+            raise CapCutTaskError("No STT task returned from API")
 
         task_id = tasks[0]["id"]
         token = tasks[0]["token"]
@@ -467,7 +466,7 @@ class CapCutClient:
                 if status in ("success", "succeed"):
                     return query_res
                 elif status in ("failed", "error"):
-                    raise CapCutTaskError(f"STT Task failed: {query_res}")
+                    raise CapCutTaskError("STT Task failed")
             time.sleep(poll_interval)
 
         raise CapCutTaskError(f"STT Task timed out after {timeout} seconds")

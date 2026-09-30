@@ -43,7 +43,7 @@ _PROFILES = {
     "page_goc_tro_bat_on": CanonicalLocalizationProfile(
         "page_goc_tro_bat_on",
         "sarcastic_dramatic_roommate_landlord_student_housing",
-        "BV007_streaming",
+        "BV075_streaming",
         "capcut",
         {
             **_SAFE_SUBTITLE_PRESENTATION,

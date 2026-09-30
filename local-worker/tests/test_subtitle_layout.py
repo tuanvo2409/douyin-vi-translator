@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from subtitle_layout import SubtitleLayoutError, SubtitleLayoutPolicy, layout_subtitles, render_ass_document
+from subtitle_layout import SubtitleLayoutError, SubtitleLayoutPolicy, layout_subtitles, render_ass_document, write_ass_subtitles
 
 
 def _cue(
@@ -174,6 +174,35 @@ class SubtitleLayoutTests(unittest.TestCase):
         yellow = render_ass_document(result["displayCues"], presentation_color="#FFE600")
         self.assertIn("Style: SubtitleText,Arial,38,&H00FFFF00&,&H00FFFF00&", cyan)
         self.assertIn("Style: SubtitleText,Arial,38,&H0000E6FF&,&H0000E6FF&", yellow)
+
+    def test_page1_mask_mode_uses_black_text_inside_mask_without_duplicate_ass_box(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result = write_ass_subtitles(
+                [_cue("Xin chào.")],
+                Path(temporary) / "page1.ass",
+                width=720,
+                height=1280,
+                page1_mask_bbox=(120, 900, 600, 1010),
+            )
+            ass = (Path(temporary) / "page1.ass").read_text(encoding="utf-8")
+        cue = result["displayCues"][0]
+        self.assertGreaterEqual(cue["boxLeftPx"], 120)
+        self.assertLessEqual(cue["boxRightPx"], 600)
+        self.assertGreaterEqual(cue["boxTopPx"], 900)
+        self.assertLessEqual(cue["boxBottomPx"], 1010)
+        self.assertIn("Style: SubtitleText,Arial,38,&H00000000&,&H00000000&", ass)
+        self.assertNotIn("SubtitleBox", ass)
+
+    def test_page1_mask_mode_rejects_text_that_cannot_fit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(SubtitleLayoutError):
+                write_ass_subtitles(
+                    [_cue("Một câu rất dài không thể vừa trong hộp hẹp")],
+                    Path(temporary) / "page1.ass",
+                    width=720,
+                    height=1280,
+                    page1_mask_bbox=(300, 900, 420, 940),
+                )
 
     def test_rendered_box_is_centered_around_the_text_position(self) -> None:
         policy = SubtitleLayoutPolicy()

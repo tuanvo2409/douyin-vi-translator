@@ -115,6 +115,22 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue((self.settings.engine_status_dir / "translator" / JOB / "event-000002.json").is_file())
         self.assertFalse((self.settings.engine_status_dir / "translator" / JOB / "event-000003.json").exists())
 
+    def test_completed_child_is_reaped_without_waiting_for_heartbeat(self):
+        sleeps = []
+        released = []
+        handle = Handle(running=True)
+        class Client:
+            def acquire(_, job): return lease_response("acquire", granted=True)
+            def heartbeat(_, job, lease_id): raise AssertionError("completed child needs no heartbeat")
+            def release(_, job, lease_id): released.append(lease_id); return lease_response("release", granted=True)
+        def sleep(seconds):
+            sleeps.append(seconds)
+            handle.running = False
+        result = run_lease_aware_work(self.job, self.settings, Client(), lambda value: handle, monotonic=lambda: 0.0, sleep=sleep, utc_now=lambda: "2026-09-11T00:00:01.000Z")
+        self.assertEqual("work_completed_lease_released", result.outcome)
+        self.assertEqual([LEASE], released)
+        self.assertLessEqual(max(sleeps), 0.25)
+
     def test_started_publication_failure_releases_exact_lease(self):
         released = []
         class Client:

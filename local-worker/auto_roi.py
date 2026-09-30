@@ -126,9 +126,17 @@ def discover_cjk_regions(samples: list[dict], frame_size: tuple[int, int]) -> li
         if not isinstance(timestamp, int) or not isinstance(items, list):
             continue
         for group in group_cjk_regions(items, frame_size):
+            confidences = [
+                float(item["confidence"])
+                for item in group["detections"]
+                if isinstance(item.get("confidence"), (int, float))
+                and not isinstance(item.get("confidence"), bool)
+            ]
             discoveries.append({
                 "timestampMs": timestamp, "bbox": group["bbox"],
                 "text": "".join(str(item.get("text") or "") for item in group["detections"]),
+                "category": "UNKNOWN",
+                **({"confidence": min(confidences)} if len(confidences) == len(group["detections"]) else {}),
             })
     return sorted(discoveries, key=lambda item: (item["timestampMs"], item["bbox"][1], item["bbox"][0]))
 
@@ -156,7 +164,10 @@ def sparse_whole_frame_discovery(video_path: Path, sample_count: int = 8) -> lis
             for item in response or []:
                 if len(item) >= 3 and float(item[2]) >= 0.45 and contains_cjk_text(item[1]):
                     quad = map_ocr_quad_to_source(item[0], (0, 0), scale, (width, height))
-                    items.append({"text": str(item[1]), "bbox": _bbox_from_quad(quad), "confidence": float(item[2])})
+                    items.append({
+                        "text": str(item[1]), "bbox": _bbox_from_quad(quad),
+                        "confidence": float(item[2]), "category": "UNKNOWN",
+                    })
             samples.append({"timestampMs": int(frame_index * 1000 / fps), "items": items})
     finally:
         capture.release()

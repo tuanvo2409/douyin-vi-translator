@@ -169,8 +169,9 @@ def build_canonical_runtime_config(
     voice = capcut_voice or profile.voice
     if not isinstance(voice, str) or not voice.strip():
         raise CanonicalProcessingError("canonical CapCut voice must be nonblank")
-    tts_provider = validate_tts_provider(os.environ.get("DUBVI_TTS_PROVIDER", "piper"))
-    return {
+    default_tts_provider = profile.tts_provider
+    tts_provider = validate_tts_provider(os.environ.get("DUBVI_TTS_PROVIDER", default_tts_provider))
+    runtime = {
         "voice": {"name": voice.strip(), "maxTempo": 1.12},
         "ttsProvider": tts_provider,
         "persona": profile.persona,
@@ -195,6 +196,10 @@ def build_canonical_runtime_config(
         "audioMode": "duck",
         "channelProfile": document["channel_slug"],
     }
+    if profile.profile_id in {"page_goc_tro_bat_on", "page_giai_cuu_chuong_lon"}:
+        runtime["localizationProvider"] = "deepseek"
+        runtime["sourceOcrVerify"] = True
+    return runtime
 
 
 def normalize_deep_policy(policy_result: object, mode: str) -> dict[str, object] | None:
@@ -399,6 +404,23 @@ def run_child_job(settings: P1CSettings, translator_job_id: str) -> dict[str, ob
         raise CanonicalProcessingError("DUBVI_POLICY_MODE must be off, review, or enforce")
     profile = resolve_canonical_profile(accepted.document)
     runtime_config = build_canonical_runtime_config(accepted.document)
+    if profile.profile_id == "page_giai_cuu_chuong_lon" and runtime_config.get("sourceEvidenceMode") != "local_asr_text_only":
+        raise CanonicalProcessingError("Page 2 requires local source evidence before media processing")
+    if runtime_config.get("localizationProvider") == "deepseek" and not os.environ.get("DEEPSEEK_API_KEY", "").strip():
+        raise CanonicalProcessingError("DEEPSEEK_API_KEY is required for canonical localization")
+    identity_fields = (
+        "translator_job_id",
+        "dispatch_id",
+        "reup_job_id",
+        "handoff_id",
+        "candidate_id",
+        "schedule_id",
+    )
+    identity = {field: accepted.document.get(field) for field in identity_fields}
+    if any(not isinstance(value, str) or not value.strip() for value in identity.values()):
+        raise CanonicalProcessingError("Translator envelope identity chain is incomplete")
+    if identity["translator_job_id"] != job_id:
+        raise CanonicalProcessingError("Translator envelope identity differs from child argument")
     legacy_job = {
         "id": job_id,
         "sourceKey": source_ref,
@@ -409,7 +431,12 @@ def run_child_job(settings: P1CSettings, translator_job_id: str) -> dict[str, ob
         "modernProfile": profile,
         "sourcePath": str(source),
         "outputDir": str(work_root),
-        "handoffId": accepted.document["handoff_id"],
+        "translatorJobId": identity["translator_job_id"],
+        "dispatchId": identity["dispatch_id"],
+        "reupJobId": identity["reup_job_id"],
+        "handoffId": identity["handoff_id"],
+        "candidateId": identity["candidate_id"],
+        "scheduleId": identity["schedule_id"],
     }
     adapter = CanonicalRpcAdapter()
     policy_holder: dict[str, object] = {"deep_policy": None}
@@ -439,12 +466,14 @@ def run_child_job(settings: P1CSettings, translator_job_id: str) -> dict[str, ob
     except CanonicalPolicyReviewRequired as error:
         return _receipt(job_id, "review_required", deep_policy=error.deep_policy, error_classification="DEEP_POLICY_REVIEW")
     except Exception as error:
+        diagnostic = str(error)
+        from modern_p1c_adapter import SourceReviewRequiredError
         return _receipt(
             job_id,
             "failed",
             deep_policy=policy_holder["deep_policy"],
-            error_classification="PROCESSING_FAILED",
-            diagnostic_summary=str(error),
+            error_classification="SOURCE_REVIEW_REQUIRED" if isinstance(error, SourceReviewRequiredError) else "PROCESSING_FAILED",
+            diagnostic_summary=diagnostic,
         )
     if adapter.last_status != "complete" or adapter.completed_output_path is None:
         return _receipt(job_id, "incomplete", deep_policy=policy_holder["deep_policy"])
@@ -538,7 +567,14 @@ def _modern_process_job(settings, adapter: CanonicalRpcAdapter, job: dict[str, o
     result = run_modern_p1c(
         Path(str(job["sourcePath"])),
         Path(str(job["outputDir"])),
-        {"translator_job_id": job["id"], "handoff_id": job.get("handoffId")},
+        {
+            "translator_job_id": job.get("translatorJobId") or job["id"],
+            "dispatch_id": job.get("dispatchId"),
+            "reup_job_id": job.get("reupJobId"),
+            "handoff_id": job.get("handoffId"),
+            "candidate_id": job.get("candidateId"),
+            "schedule_id": job.get("scheduleId"),
+        },
         job["modernProfile"],
         source_stage=stages["source"],
         localization_stage=stages["localization"],

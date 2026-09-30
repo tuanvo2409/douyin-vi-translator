@@ -73,10 +73,29 @@ def _with_neighbors(records: Sequence[Mapping[str, object]]) -> list[dict[str, o
     ]
 
 
+def _is_unresolved_source(item: Mapping[str, object]) -> bool:
+    classification = str(item.get("classification") or item.get("type") or "").upper()
+    if classification == "UNRESOLVED_DIALOGUE":
+        return True
+    if str(item.get("source_confidence") or "").lower() in {"low", "unresolved"}:
+        return True
+    flags = []
+    for key in ("flags", "source_flags", "sourceFlags"):
+        value = item.get(key)
+        if isinstance(value, (list, tuple, set)):
+            flags.extend(str(flag).upper() for flag in value)
+    if set(flags) & {"AV_CONFLICT", "UNRESOLVED"}:
+        return True
+    if str(item.get("decision") or "").upper() in {"AV_CONFLICT", "UNRESOLVED"}:
+        return True
+    source = item.get("resolvedZh")
+    return not isinstance(source, str) or not source.strip()
+
+
 def localize(records: Sequence[Mapping[str, object]], *, scene_memory: Mapping[str, object], request: Callable[[dict[str, object]], object], profile: str, on_stage=None) -> dict[str, list[dict[str, object]]]:
     if profile not in PROFILES:
         raise ValueError("unsupported localization profile")
-    unresolved = lambda item: item.get("classification") == "UNRESOLVED_DIALOGUE" or item.get("type") == "UNRESOLVED_DIALOGUE" or item.get("source_confidence") in {"low", "unresolved"}
+    unresolved = _is_unresolved_source
     resolved = [dict(item) for item in records if item.get("kind") == "dialogue" and not unresolved(item)]
     review_required = [{"utteranceId": item["utteranceId"], "reason": "UNRESOLVED_SOURCE"} for item in records if item.get("kind") == "dialogue" and unresolved(item)]
     if not resolved:

@@ -7,10 +7,11 @@ import unittest
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import p1c_processing
 from dubvi_engine_contract import canonical_json_bytes
+from canonical_profile import resolve_canonical_profile
 from p1c_config import P1CSettings
 from p1c_intake import accept_translator_envelope
 from p1c_lease_client import LeaseBridgeResponse
@@ -28,6 +29,7 @@ from p1c_processing import (
 )
 from p1c_status import load_status_event, publish_status_event
 from p1c_worker import WorkerResult
+from modern_p1c_adapter import SourceReviewRequiredError
 
 
 def _fingerprint(payload: bytes) -> str:
@@ -182,7 +184,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual({"xPercent": 2, "yPercent": 66, "widthPercent": 96, "heightPercent": 9.8, "blurPx": 24}, profile["roi"])
         self.assertEqual("duck", profile["audioMode"])
         page_a = build_canonical_runtime_config({**self.document, "localization_profile": "page_goc_tro_bat_on"})
-        self.assertEqual("BV007_streaming", page_a["voice"]["name"])
+        self.assertEqual("BV075_streaming", page_a["voice"]["name"])
         self.assertEqual("local_asr_text_only", page_a["sourceEvidenceMode"])
         self.assertIn("USER_PRODUCT_DECISION", str(page_a["brandDecision"]))
         result = SimpleNamespace(
@@ -202,6 +204,46 @@ class ProcessingTests(unittest.TestCase):
             },
             normalize_deep_policy(result, "review"),
         )
+
+    def test_page1_runtime_selects_deepseek_with_source_ocr_verification(self):
+        runtime = build_canonical_runtime_config({
+            **self.document, "localization_profile": "page_goc_tro_bat_on",
+        })
+        self.assertEqual("deepseek", runtime["localizationProvider"])
+        self.assertIs(True, runtime["sourceOcrVerify"])
+        self.assertEqual("BV075_streaming", runtime["voice"]["name"])
+
+    def test_missing_page1_deepseek_key_stops_before_media_processing(self):
+        publish_status_event(self.settings, self.started)
+        page1_document = {**self.document, "localization_profile": "page_goc_tro_bat_on"}
+        accepted = SimpleNamespace(
+            document=page1_document,
+            handoff_media_path=self.settings.media_dir / self.document["handoff_media_ref"],
+        )
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": ""}, clear=False), \
+             patch.object(p1c_processing, "load_translator_envelope", return_value=accepted), \
+             patch.object(p1c_processing, "_accepted_matches", return_value=True), \
+             patch.object(p1c_processing, "_started_matches", return_value=True), \
+             patch.object(p1c_processing, "_modern_process_job") as process:
+            with self.assertRaisesRegex(p1c_processing.CanonicalProcessingError, "DEEPSEEK_API_KEY"):
+                run_child_job(self.settings, self.ids["translator"])
+        process.assert_not_called()
+
+    def test_page2_legacy_cloud_source_route_fails_before_media_processing(self):
+        publish_status_event(self.settings, self.started)
+        page2_document = {**self.document, "localization_profile": "page_giai_cuu_chuong_lon"}
+        accepted = SimpleNamespace(
+            document=page2_document,
+            handoff_media_path=self.settings.media_dir / self.document["handoff_media_ref"],
+        )
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key"}, clear=False), \
+             patch.object(p1c_processing, "load_translator_envelope", return_value=accepted), \
+             patch.object(p1c_processing, "_accepted_matches", return_value=True), \
+             patch.object(p1c_processing, "_started_matches", return_value=True), \
+             patch.object(p1c_processing, "_modern_process_job") as process:
+            with self.assertRaisesRegex(p1c_processing.CanonicalProcessingError, "local source evidence"):
+                run_child_job(self.settings, self.ids["translator"])
+        process.assert_not_called()
 
     def test_typed_canonical_policy_outcomes_are_distinct(self):
         deep = {"policy_schema_version": 1, "mode": "enforce", "overall_decision": "reject", "reason_codes": ["R"], "needs_review": False, "evaluated_at": "2026-09-11T00:00:00.000Z"}
@@ -242,6 +284,90 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual("succeeded", receipt["outcome"])
         self.assertTrue((self.settings.output_dir / "p1c" / self.ids["translator"] / "output.mp4").is_file())
         self.assertFalse((self.settings.engine_status_dir / "translator" / self.ids["translator"] / "event-000003.json").exists())
+
+    def test_modern_child_passes_the_complete_canonical_identity_chain(self):
+        seen: list[dict[str, object]] = []
+        identity_fields = {
+            "translator_job_id": self.ids["translator"],
+            "dispatch_id": self.ids["dispatch"],
+            "reup_job_id": self.ids["reup"],
+            "handoff_id": self.ids["handoff"],
+            "candidate_id": self.ids["candidate"],
+            "schedule_id": self.ids["schedule"],
+        }
+
+        def source_stage(source, output, **kwargs):
+            seen.append(dict(kwargs["identity"]))
+            return [{"utteranceId": "u1", "startMs": 0, "endMs": 1000}]
+
+        def localization_stage(records, **kwargs):
+            seen.append(dict(kwargs["identity"]))
+            return [{**records[0], "nativeVi": "Xin chào", "ttsEligible": True}]
+
+        def tts_stage(records, output, **kwargs):
+            seen.append(dict(kwargs["identity"]))
+            return {"voiceEvents": [{
+                "utteranceId": "u1", "audioPath": "audio/u1.mp3",
+                "fittedDurationMs": 500, "effectiveStartMs": 0,
+                "effectiveEndMs": 500,
+            }]}
+
+        def delivery_stage(records, **kwargs):
+            seen.append(dict(kwargs["identity"]))
+            return [{"utteranceId": "u1", "sourceStartMs": 0, "sourceEndMs": 1000}]
+
+        def timeline_stage(voices, cues, plans, **kwargs):
+            seen.append(dict(kwargs["identity"]))
+            return {"voiceEvents": voices, "subtitleCues": cues, "plans": plans}
+
+        def subtitle_stage(cues, **kwargs):
+            seen.append(dict(kwargs["identity"]))
+            return {"outputPath": "out.mp4", "identity": dict(kwargs["identity"])}
+
+        job = {
+            "id": self.ids["translator"],
+            "handoffId": self.ids["handoff"],
+            "dispatchId": self.ids["dispatch"],
+            "reupJobId": self.ids["reup"],
+            "candidateId": self.ids["candidate"],
+            "scheduleId": self.ids["schedule"],
+            "sourcePath": str(self.settings.media_dir / "home" / f"reup-{self.ids['reup']}.mp4"),
+            "outputDir": str(self.settings.output_dir / "modern"),
+            "modernProfile": resolve_canonical_profile({"localization_profile": "loc-v1", "target_platform": "tiktok"}),
+            "modernStages": {
+                "source": source_stage, "localization": localization_stage,
+                "tts": tts_stage, "delivery": delivery_stage,
+                "timeline": timeline_stage, "subtitle": subtitle_stage,
+            },
+        }
+        adapter = Mock()
+
+        p1c_processing._modern_process_job(self.settings, adapter, job)
+
+        self.assertEqual([identity_fields] * 6, seen)
+
+    def test_source_evidence_gap_maps_to_actionable_review_failure(self):
+        diagnostic = "SOURCE_EVIDENCE_UNRESOLVED: OCR dialogue lacks ASR overlap; MASK_REVIEW_REQUIRED"
+        publish_status_event(self.settings, self.started)
+        with patch.object(p1c_processing, "_modern_process_job", side_effect=SourceReviewRequiredError(diagnostic)):
+            receipt = run_child_job(self.settings, self.ids["translator"])
+
+        self.assertEqual("failed", receipt["outcome"])
+        self.assertEqual("SOURCE_REVIEW_REQUIRED", receipt["error_classification"])
+        self.assertIn("SOURCE_EVIDENCE_UNRESOLVED", receipt["diagnostic_summary"])
+        self.assertIn("MASK_REVIEW_REQUIRED", receipt["diagnostic_summary"])
+        self.assertNotEqual("review_required", receipt["outcome"])
+
+    def test_all_low_confidence_source_maps_to_actionable_review_failure(self):
+        diagnostic = "SOURCE_REVIEW_REQUIRED: all Page 1 ASR cues are below the source confidence floor"
+        publish_status_event(self.settings, self.started)
+        with patch.object(p1c_processing, "_modern_process_job", side_effect=SourceReviewRequiredError(diagnostic)):
+            receipt = run_child_job(self.settings, self.ids["translator"])
+
+        self.assertEqual("failed", receipt["outcome"])
+        self.assertEqual("SOURCE_REVIEW_REQUIRED", receipt["error_classification"])
+        self.assertIn("SOURCE_REVIEW_REQUIRED", receipt["diagnostic_summary"])
+        self.assertNotEqual("review_required", receipt["outcome"])
 
     def test_parent_maps_receipt_before_release_and_crash_keeps_running(self):
         success_receipt = {

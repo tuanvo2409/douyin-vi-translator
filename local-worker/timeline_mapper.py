@@ -72,6 +72,40 @@ class TimelineMap:
         }
 
 
+def timeline_map_from_document(document: Mapping[str, object]) -> TimelineMap:
+    """Reconstruct the accepted mapper document without inventing a timeline."""
+    if not isinstance(document, Mapping) or document.get("schemaVersion") != 1:
+        raise TimelineMappingError("accepted timeline document is invalid")
+    source_duration = document.get("sourceDurationMs")
+    output_duration = document.get("outputDurationMs")
+    raw_segments = document.get("segments")
+    if (
+        isinstance(source_duration, bool) or not isinstance(source_duration, int) or source_duration <= 0
+        or isinstance(output_duration, bool) or not isinstance(output_duration, int) or output_duration <= 0
+        or not isinstance(raw_segments, list) or not raw_segments
+    ):
+        raise TimelineMappingError("accepted timeline document is malformed")
+    segments: list[TimelineSegment] = []
+    for raw in raw_segments:
+        if not isinstance(raw, Mapping):
+            raise TimelineMappingError("accepted timeline segment is malformed")
+        bounds = [raw.get(key) for key in ("sourceStartMs", "sourceEndMs", "outputStartMs", "outputEndMs")]
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in bounds):
+            raise TimelineMappingError("accepted timeline segment bounds are invalid")
+        speed = raw.get("speed")
+        utterance_ids = raw.get("utteranceIds", [])
+        if not isinstance(speed, (int, float)) or isinstance(speed, bool) or not 0 < speed <= 1:
+            raise TimelineMappingError("accepted timeline segment speed is invalid")
+        if not isinstance(utterance_ids, list) or any(not isinstance(value, str) for value in utterance_ids):
+            raise TimelineMappingError("accepted timeline segment identities are invalid")
+        segments.append(TimelineSegment(*bounds, float(speed), str(raw.get("reason") or ""), tuple(utterance_ids)))
+    _validate_segments(segments, source_duration)
+    mapping = TimelineMap(source_duration, segments)
+    if mapping.output_duration_ms != output_duration or mapping.to_dict()["segments"] != raw_segments:
+        raise TimelineMappingError("accepted timeline document changed during reconstruction")
+    return mapping
+
+
 def build_timeline(
     requests: Sequence[Mapping[str, object]], *, source_duration_ms: int
 ) -> TimelineMap:

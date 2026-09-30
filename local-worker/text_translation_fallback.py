@@ -171,7 +171,7 @@ class GeminiPrimaryWithGroqTextFallback:
     def __init__(self, gemini: Callable[[Mapping[str, object]], object], groq: Callable[[Mapping[str, object]], object]) -> None:
         self.gemini = gemini
         self.groq = groq
-        self.last_provider = "gemini"
+        self.last_provider: str | None = None
         self.gemini_failure: str | None = None
 
     def __call__(self, payload: Mapping[str, object]) -> object:

@@ -120,7 +120,11 @@ class MultimodalSourceContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             media, cache = Path(directory) / "source.mp4", Path(directory) / "av_analysis.json"
             media.write_bytes(b"fake media")
-            analyzer = av_analyzer.GeminiAVAnalyzer(llm_transport.StructuredGeminiTransport(request=request))
+            analyzer = av_analyzer.GeminiAVAnalyzer(
+                llm_transport.StructuredGeminiTransport(request=request),
+                allow_cloud_upload=True,
+                clip_extractor=lambda _path, start, end: f"bounded:{start}:{end}".encode("ascii"),
+            )
             first = analyzer.analyze_cached(media, cache, start_ms=0, end_ms=1)
             second = analyzer.analyze_cached(media, cache, start_ms=0, end_ms=1)
             self.assertEqual(first, second)
@@ -204,6 +208,23 @@ class MultimodalSourceContractTests(unittest.TestCase):
         self.assertIsNone(result["dialogue"][0]["resolvedZh"])
         self.assertIn("AV_CONFLICT", result["dialogue"][0]["flags"])
         self.assertLessEqual(len(result["dialogue"][0]["alternatives"]), 2)
+
+    @unittest.skipIf(source_reconciler is None, "CP1 reconciliation is not implemented")
+    def test_conflicting_dialogue_retains_original_av_evidence_for_review(self) -> None:
+        result = source_reconciler.reconcile_source(
+            [{"cue_id": "cue-22", "position": 22, "start_ms": 0, "end_ms": 1000, "asr_text_zh": "甲", "ocr_text_zh": "乙"}],
+            _canonical_av(utterances=[
+                _av_utterance(100, 700, "甲"),
+                _av_utterance(650, 900, "乙"),
+            ]),
+        )
+
+        record = result["dialogue"][0]
+        self.assertIsNone(record["resolvedZh"])
+        self.assertEqual("甲", record["evidence"]["avSpoken"])
+        self.assertEqual("甲", record["evidence"]["avSubtitle"])
+        self.assertEqual("LOW", record["confidence"])
+        self.assertIn("AV_CONFLICT", record["flags"])
 
     @unittest.skipIf(source_harness is None, "CP1 harness is not implemented")
     def test_persisted_runtime_loader_reconstructs_full_23_row_fixture_without_expected_input(self) -> None:

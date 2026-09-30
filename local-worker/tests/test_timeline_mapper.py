@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from timeline_mapper import TimelineMappingError, build_timeline
+from timeline_mapper import TimelineMappingError, build_timeline, timeline_map_from_document
 
 
 def _span(start: int, end: int, speed: float = 1.0, action: str = "KEEP", **extra: object) -> dict[str, object]:
@@ -49,6 +49,20 @@ class TimelineMapperTests(unittest.TestCase):
         subtitle_start, subtitle_end = timeline.map_interval(250, 500)
         self.assertEqual(voice_start, subtitle_start)
         self.assertEqual(500, subtitle_end - subtitle_start)
+
+    def test_page2_source_anchor_interval_uses_slowed_accepted_timeline(self) -> None:
+        timeline = build_timeline([_span(0, 1000, 0.5, "SLOW_VISUAL")], source_duration_ms=1000)
+        self.assertEqual((800, 1000), timeline.map_interval(400, 500))
+        self.assertEqual(2000, timeline.output_duration_ms)
+
+    def test_accepted_timeline_reconstruction_validates_the_document(self) -> None:
+        document = build_timeline([_span(0, 1000, 0.5, "SLOW_VISUAL")], source_duration_ms=1000).to_dict()
+        reconstructed = timeline_map_from_document(document)
+        self.assertEqual((800, 1000), reconstructed.map_interval(400, 500))
+
+        document["outputDurationMs"] = 1
+        with self.assertRaises(TimelineMappingError):
+            timeline_map_from_document(document)
 
     def test_overlapping_compatible_requests_merge_with_strongest_slowdown(self) -> None:
         timeline = build_timeline(

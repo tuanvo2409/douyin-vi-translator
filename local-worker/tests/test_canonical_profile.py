@@ -12,14 +12,14 @@ class CanonicalProfileTests(unittest.TestCase):
         )
 
         self.assertEqual("page_goc_tro_bat_on", page_a.profile_id)
-        self.assertEqual("BV007_streaming", page_a.voice)
+        self.assertEqual("BV075_streaming", page_a.voice)
 
     def test_page_profiles_resolve_distinct_persona_voice_and_safe_subtitle_policy(self) -> None:
         page_a = resolve_canonical_profile({"localization_profile": "page_goc_tro_bat_on", "target_platform": "tiktok"})
         page_b = resolve_canonical_profile({"localization_profile": "page_giai_cuu_chuong_lon", "target_platform": "tiktok"})
         self.assertEqual("#00FFFF", page_a.subtitle_presentation["color"])
         self.assertEqual("#FFE600", page_b.subtitle_presentation["color"])
-        self.assertEqual("BV007_streaming", page_a.voice)
+        self.assertEqual("BV075_streaming", page_a.voice)
         self.assertEqual("BV421_vivn_streaming", page_b.voice)
         self.assertNotEqual(page_a.persona, page_b.persona)
         self.assertEqual("source_aware_measured", page_a.subtitle_presentation["layout"])

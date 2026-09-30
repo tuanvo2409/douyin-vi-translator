@@ -31,6 +31,10 @@ def _canonical_av(start_ms: int = 0, end_ms: int = 1_000) -> dict[str, object]:
     }
 
 
+def _bounded_test_clip(_path: Path, start_ms: int, end_ms: int) -> bytes:
+    return f"bounded:{start_ms}:{end_ms}".encode("ascii")
+
+
 class _FailingGemini:
     last_call = {"transportAttempts": 1, "finalTransportStatus": "HTTP_429", "httpStatus": 429}
 
@@ -78,6 +82,8 @@ class GroqAvFallbackTests(unittest.TestCase):
             transport=_SuccessGemini(),
             groq_transport=groq,
             groq_frame_extractor=self._frames,
+            allow_cloud_upload=True,
+            clip_extractor=_bounded_test_clip,
         )
         with tempfile.TemporaryDirectory() as directory:
             result = analyzer.analyze_media(self._media(directory), start_ms=0, end_ms=1_000)
@@ -90,6 +96,8 @@ class GroqAvFallbackTests(unittest.TestCase):
             transport=_FailingGemini(),
             groq_transport=groq,
             groq_frame_extractor=self._frames,
+            allow_cloud_upload=True,
+            clip_extractor=_bounded_test_clip,
         )
         with tempfile.TemporaryDirectory() as directory:
             result = analyzer.analyze_media(self._media(directory), start_ms=0, end_ms=1_000)
@@ -104,6 +112,8 @@ class GroqAvFallbackTests(unittest.TestCase):
             transport=_NoReadyGemini(),
             groq_transport=groq,
             groq_frame_extractor=self._frames,
+            allow_cloud_upload=True,
+            clip_extractor=_bounded_test_clip,
         )
         with tempfile.TemporaryDirectory() as directory:
             analyzer.analyze_media(self._media(directory), start_ms=0, end_ms=1_000)
@@ -115,6 +125,8 @@ class GroqAvFallbackTests(unittest.TestCase):
             transport=_NoReadyGemini(),
             groq_transport=groq,
             groq_frame_extractor=self._frames,
+            allow_cloud_upload=True,
+            clip_extractor=_bounded_test_clip,
         )
         with tempfile.TemporaryDirectory() as directory:
             result = av_analyzer.analyze_media_windows_with_subdivision(
@@ -222,6 +234,8 @@ class GroqAvFallbackTests(unittest.TestCase):
             transport=gemini,
             groq_transport=groq,
             groq_frame_extractor=self._frames,
+            allow_cloud_upload=True,
+            clip_extractor=_bounded_test_clip,
         )
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(av_analyzer.AVResponseRecoveryError):
@@ -230,7 +244,9 @@ class GroqAvFallbackTests(unittest.TestCase):
         self.assertEqual(2, gemini.calls)
 
     def test_missing_groq_key_keeps_gemini_provider_error_explicit(self) -> None:
-        analyzer = av_analyzer.GeminiAVAnalyzer(transport=_NoReadyGemini())
+        analyzer = av_analyzer.GeminiAVAnalyzer(
+            transport=_NoReadyGemini(), allow_cloud_upload=True, clip_extractor=_bounded_test_clip,
+        )
         with patch.dict(os.environ, {}, clear=True), tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(llm_transport.ProviderError, "NO_READY_GEMINI_KEY"):
                 analyzer.analyze_media(self._media(directory), start_ms=0, end_ms=1_000)
@@ -242,6 +258,8 @@ class GroqAvFallbackTests(unittest.TestCase):
             transport=_FailingGemini(),
             groq_transport=groq,
             groq_frame_extractor=self._frames,
+            allow_cloud_upload=True,
+            clip_extractor=_bounded_test_clip,
         )
         with tempfile.TemporaryDirectory() as directory:
             recovery = Path(directory) / "recovery.json"

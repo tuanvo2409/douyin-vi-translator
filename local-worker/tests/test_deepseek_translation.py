@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import llm_translator
+import vn_localizer
 
 
 class _Response:
@@ -19,6 +20,31 @@ class _Response:
 
 
 class DeepSeekTranslationTests(unittest.TestCase):
+    def test_unresolved_text_never_becomes_empty_provider_input(self):
+        calls = []
+
+        def request(payload):
+            calls.append(payload)
+            return {"translations": []}
+
+        result = vn_localizer.localize(
+            [{
+                "utteranceId": "u-av-conflict",
+                "resolvedZh": "甲",
+                "source_confidence": "high",
+                "classification": "RESOLVED_DIALOGUE",
+                "kind": "dialogue",
+                "flags": ["AV_CONFLICT", "UNRESOLVED"],
+            }],
+            scene_memory={"terminologyEvidence": []},
+            request=request,
+            profile="neutral_faithful",
+        )
+
+        self.assertEqual([], calls)
+        self.assertEqual([], result["accepted"])
+        self.assertEqual([{"utteranceId": "u-av-conflict", "reason": "UNRESOLVED_SOURCE"}], result["review_required"])
+
     def test_retries_only_invalid_chinese_result_and_keeps_valid_positions(self):
         cues = [
             {"position": 4, "startMs": 0, "endMs": 1200, "sourceTextZh": "老婆生了龙凤胎"},
