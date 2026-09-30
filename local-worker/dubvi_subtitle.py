@@ -329,6 +329,68 @@ def generate_channel_logo_badge(
         return None
 
 
+def smart_chunk_vietnamese(text: str, max_words: int = 9, min_words: int = 4) -> list[list[str]]:
+    """Phân rã câu thoại tiếng Việt dài thành các thẻ hiển thị ngắn gọn (5-8 từ) chuẩn nhịp điệu TikTok."""
+    words = text.strip().split()
+    if len(words) <= max_words:
+        return [words]
+
+    chunks = []
+    i = 0
+    conjunctions = {'và', 'hoặc', 'nhưng', 'mà', 'để', 'vì', 'do', 'nếu', 'thì', 'là', 'cho', 'khi', 'với'}
+
+    while i < len(words):
+        rem = len(words) - i
+        if rem <= max_words:
+            chunks.append(words[i:])
+            break
+
+        best_split = -1
+        upper_bound = min(i + max_words, len(words) - 1)
+        lower_bound = i + min_words
+
+        # Ưu tiên 1: Tách ngay tại dấu câu kết thúc ý (, ; ! ? . : — -)
+        for j in range(upper_bound, lower_bound - 1, -1):
+            if any(words[j - 1].endswith(p) for p in [',', ';', '!', '?', '.', ':', '—', '-']):
+                best_split = j
+                break
+
+        # Ưu tiên 2: Tách trước liên từ / giới từ tự nhiên
+        if best_split == -1:
+            for j in range(upper_bound, lower_bound - 1, -1):
+                clean_w = re.sub(r'[^\w\s]', '', words[j].lower())
+                if clean_w in conjunctions:
+                    best_split = j
+                    break
+
+        # Ưu tiên 3: Tách chia đôi cân bằng
+        if best_split == -1:
+            if rem < 2 * max_words:
+                best_split = i + (rem + 1) // 2
+            else:
+                best_split = i + 7
+
+        chunks.append(words[i:best_split])
+        i = best_split
+
+    return chunks
+
+
+def format_cue_lines(words: list[str]) -> list[str]:
+    """Khống chế cứng tối đa 1 hoặc 2 dòng cho mỗi thẻ phụ đề (Mỗi dòng tối đa 4-5 từ)."""
+    if len(words) <= 5:
+        return [" ".join(words)]
+
+    mid = (len(words) + 1) // 2
+    for offset in [0, -1, 1, -2, 2]:
+        idx = mid + offset
+        if 2 <= idx <= len(words) - 2:
+            if any(words[idx - 1].endswith(p) for p in [',', ';', '!', '?', ':', '—', '-']):
+                return [" ".join(words[:idx]), " ".join(words[idx:])]
+
+    return [" ".join(words[:mid]), " ".join(words[mid:])]
+
+
 def draw_ass(
     segments: list[dict[str, Any]],
     video_width: int,
@@ -341,7 +403,7 @@ def draw_ass(
     box_color: str = "white",
     video_duration_sec: float | None = None
 ) -> None:
-    """Váº½ phá»¥ Ä‘á» ASS Tháº» Bo GĂ³c ÄÆ¡n Tinh Gá»n (Sleek Compact Pill) tá»± Ä‘á»™ng khá»›p theo tá»a Ä‘á»™ OCR vĂ  nháº­n diá»‡n kĂªnh."""
+    """Vẽ phụ đề ASS Thẻ Bo Góc Đơn Tinh Gọn (Sleek Compact Pill) tự động khớp theo tọa độ OCR và nhận diện kênh."""
     if video_height >= video_width:
         target_w, target_h = 1080, 1920
     else:
@@ -349,8 +411,8 @@ def draw_ass(
 
     center_x = target_w // 2
     actual_font_size = font_size if font_size else 44
-    
-    # TĂ­nh tĂ¢m Y theo káº¿t quáº£ OCR tá»± Ä‘á»™ng quĂ©t Ä‘Æ°á»£c
+
+    # Tính tâm Y theo kết quả OCR tự động quét được
     if roi and "yPercent" in roi:
         center_y = int(target_h * roi.get("yPercent", 75.0) / 100.0)
     elif roi and "yCenterPx" in roi:
@@ -358,14 +420,14 @@ def draw_ass(
     else:
         center_y = int(target_h * 0.75)
 
-    # Cáº¥u hĂ¬nh mĂ u sáº¯c theo Persona KĂªnh (Black Pill + Yellow Text vs White Pill + Dark Text)
-    if box_color.lower() in ("black", "#111111", "#000000", "den", "Ä‘en"):
+    # Cấu hình màu sắc theo Persona Kênh (Black Pill + Yellow Text vs White Pill + Dark Text)
+    if box_color.lower() in ("black", "#111111", "#000000", "den", "đen"):
         box_ass_color = "&H00111111"
     else:
         box_ass_color = "&H00FFFFFF"
 
-    if font_color.lower() in ("yellow", "#ffe600", "#ffea00", "#ffff00", "vang", "vĂ ng"):
-        text_ass_color = "&H0000E6FF"  # VĂ ng rá»±c trong chuáº©n ASS (&H00BBGGRR&)
+    if font_color.lower() in ("yellow", "#ffe600", "#ffea00", "#ffff00", "vang", "vàng"):
+        text_ass_color = "&H0000E6FF"  # Vàng rực trong chuẩn ASS (&H00BBGGRR&)
     elif font_color.startswith("&H"):
         text_ass_color = font_color
     else:
@@ -391,16 +453,16 @@ def draw_ass(
         path.write_text("\n".join(lines), encoding="utf-8")
         return
 
-    # 1. TĂ­nh toĂ¡n tá»a Ä‘á»™ Y chuáº©n vĂ  kĂ­ch thÆ°á»›c thanh mask cá»‘ Ä‘á»‹nh rá»™ng rĂ£i (KhĂ´ng bao giá» trĂ n sub)
+    # 1. Tính toán tọa độ Y chuẩn và kích thước thanh mask cố định rộng rãi (Gọn gàng, không bao giờ tràn sub)
     detected_ys = [int(s.get("yCenterPx")) for s in valid_segments if s.get("yCenterPx")]
     common_cy = int(sorted(detected_ys)[len(detected_ys) // 2]) if detected_ys else center_y
-    common_h = 180 # TÄƒng lĂªn 180px táº¡o padding trĂªn dÆ°á»›i thoĂ¡ng Ä‘Ă£ng
-    common_w = 980 # Má»Ÿ rá»™ng tá»« 880 lĂªn 980px, chá»«a lá» an toĂ n 50px má»—i bĂªn viá»n 1080px
+    common_h = 160  # 160px: Ôm khít 1-2 dòng chữ 44px với padding trên/dưới thoáng đãng
+    common_w = 920  # 920px: Chừa lề an toàn 80px mỗi bên màn hình 1080px (chuẩn mobile safe-zone)
     box_left = center_x - (common_w // 2)
     box_top = common_cy - (common_h // 2)
     pill_vector = round_rect_ass(common_w, common_h, r=24)
 
-    # 2. Gom nhĂ³m cĂ¡c khoáº£ng thoáº¡i liĂªn tá»¥c (náº¿u khoáº£ng nghá»‰ giá»¯a 2 cĂ¢u thoáº¡i <= 2.2s thĂ¬ giá»¯ nguyĂªn thanh mask)
+    # 2. Gom nhóm các khoảng thoại liên tục để tạo dải nền mask êm ái không chớp giật
     intervals: list[tuple[int, int]] = []
     curr_start = int(valid_segments[0].get("startMs", 0))
     curr_end = int(valid_segments[0].get("endMs", curr_start + 1500))
@@ -408,7 +470,7 @@ def draw_ass(
     for s in valid_segments[1:]:
         s_st = int(s.get("startMs", 0))
         s_et = int(s.get("endMs", s_st + 1500))
-        if s_st - curr_end <= 2800: # Khoáº£ng cĂ¡ch nghá»‰ <= 2.8s -> Ná»‘i liá»n máº¡ch khĂ´ng chá»›p nhĂ¡y che hardsub
+        if s_st - curr_end <= 2800:
             curr_end = max(curr_end, s_et)
         else:
             intervals.append((curr_start, curr_end))
@@ -416,7 +478,7 @@ def draw_ass(
             curr_end = s_et
     intervals.append((curr_start, curr_end))
 
-    # Layer 0: Váº½ cĂ¡c thanh mask cá»‘ Ä‘á»‹nh Ăªm Ă¡i vá»›i hiá»‡u á»©ng fade-in / fade-out (Zero Flickering)
+    # Layer 0: Vẽ các thanh mask cố định êm ái với hiệu ứng fade-in / fade-out (Zero Flickering)
     for i_st, i_et in intervals:
         if video_duration_sec is not None:
             max_limit_ms = int(video_duration_sec * 1000)
@@ -424,9 +486,9 @@ def draw_ass(
                 i_et = max_limit_ms
         st_str = ass_time(i_st)
         et_str = ass_time(i_et)
-        lines.append(f"Dialogue: 0,{st_str},{et_str},CleanBox,,0,0,0,,{{\\fad(150,150)\\an7\\pos({box_left},{box_top})\\p1}}{pill_vector}{{\\p0}}")
+        lines.append(f"Dialogue: 0,{st_str},{et_str},CleanBox,,0,0,0,{{\\fad(150,150)\\an7\\pos({box_left},{box_top})\\p1}}{pill_vector}{{\\p0}}")
 
-    # Layer 1: Váº½ phá»¥ Ä‘á» tiáº¿ng Viá»‡t nháº£y cĂ¢u mÆ°á»£t mĂ  trĂªn ná»n thanh mask cá»‘ Ä‘á»‹nh
+    # Layer 1: Vẽ phụ đề tiếng Việt ngắn gọn (tối đa 1-2 dòng) nhảy nhịp nhàng theo thời gian âm thanh
     for seg in valid_segments:
         st_ms = int(seg.get("startMs", 0))
         et_ms = int(seg.get("endMs", st_ms + 1500))
@@ -434,16 +496,23 @@ def draw_ass(
         if not vi_txt:
             continue
 
-        words = vi_txt.split()
-        if len(vi_txt) > 20 and len(words) > 3:
-            mid = len(words) // 2
-            formatted_vi = " ".join(words[:mid]) + r"\N" + " ".join(words[mid:])
-        else:
-            formatted_vi = vi_txt
+        chunks = smart_chunk_vietnamese(vi_txt, max_words=9, min_words=4)
+        total_w = sum(len(c) for c in chunks)
+        total_dur = max(100, et_ms - st_ms)
+        curr_st = st_ms
 
-        st_str = ass_time(st_ms)
-        et_str = ass_time(et_ms)
-        clean_text = formatted_vi.replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
-        lines.append(f"Dialogue: 1,{st_str},{et_str},CleanText,,0,0,0,,{{\\an5\\pos({center_x},{common_cy})}}{clean_text}")
+        for i, c_words in enumerate(chunks):
+            if i == len(chunks) - 1:
+                c_et = et_ms
+            else:
+                c_dur = int(total_dur * (len(c_words) / max(1, total_w)))
+                c_et = curr_st + c_dur
+
+            lines_list = format_cue_lines(c_words)
+            clean_text = "\\N".join(lines_list).replace("{", "\\{").replace("}", "\\}")
+            st_str = ass_time(curr_st)
+            et_str = ass_time(c_et)
+            lines.append(f"Dialogue: 1,{st_str},{et_str},CleanText,,0,0,0,{{\\an5\\pos({center_x},{common_cy})}}{clean_text}")
+            curr_st = c_et
 
     path.write_text("\n".join(lines), encoding="utf-8")
