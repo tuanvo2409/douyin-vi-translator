@@ -784,3 +784,131 @@ Hãy tạo ra:
         "hashtags": default_tags,
         "full_post": full_fallback
     }
+
+
+def generate_4_platform_social_package(
+    segments: List[Dict[str, Any]],
+    channel_profile: Optional[str] = None,
+    api_key: Optional[str] = None
+) -> Dict[str, Dict[str, Any]]:
+    """Master Prompt Engine: Tự động sinh 4 bộ Caption + CTA + Hashtags chuẩn thuật toán cho TikTok, Facebook Reels, YouTube Shorts, Instagram Reels."""
+    context_lines = []
+    for s in segments:
+        t = s.get("translatedTextVi") or s.get("sourceTextZh") or s.get("asrTextZh") or ""
+        if t:
+            context_lines.append(t)
+    context_text = " ".join(context_lines)
+    
+    persona_key = "page_giai_cuu_chuong_lon"
+    if channel_profile:
+        cleaned = channel_profile.lower().replace(" ", "_").replace("-", "_")
+        if "goc_tro" in cleaned or "bat_on" in cleaned:
+            persona_key = "page_goc_tro_bat_on"
+            
+    persona_name = PAGE_PERSONAS[persona_key]["name"]
+
+    prompt = f"""Bạn là Giám đốc Marketing và Top Content Creator triệu view am hiểu sâu sắc thuật toán phân phối của TikTok, Facebook Reels, YouTube Shorts và Instagram Reels.
+Chủ đề kênh: {persona_name} (GIAI ĐOẠN 1: THUẦN XÂY TRUST & TRAO GIÁ TRỊ, TUYỆT ĐỐI KHÔNG BÁN HÀNG, KHÔNG GIỎ HÀNG, KHÔNG SEEDING).
+
+Dựa trên nội dung kịch bản video sau:
+\"\"\"{context_text}\"\"\"
+
+Hãy tạo ra ĐÚNG 4 gói đăng bài chuyên biệt tối ưu thuật toán cho 4 nền tảng theo định dạng JSON:
+
+1. TIKTOK:
+   - title: Viết hoa in đậm giật tít gây tò mò, kịch tính về đời sống KTX / phòng trọ / sinh viên.
+   - caption: 2-3 câu ngắn, nhịp dứt khoát, dùng văn phong đời thực dí dỏm (mấy bà, cả nhà, cười xỉu, bất ổn, kiếp nạn).
+   - cta: Kêu gọi bấm nút Follow để hóng tiếp tập sau hoặc để lại bình luận chia sẻ câu chuyện phòng trọ (TUYỆT ĐỐI KHÔNG NHẮC ĐẾN MUA BÁN, KHÔNG GIỎ HÀNG).
+   - hashtags: 6-8 tags (#xuhuong, #fyp, #GocTroBatOn, #DoiKTX, #HaiHuoc, #SinhVien - CẤM DÙNG #TikTokShop hay tag bán hàng).
+   - full_post: Ghép hoàn chỉnh title + caption + cta + hashtags sẵn sàng copy.
+
+2. FACEBOOK REELS:
+   - title: Dạng câu hỏi hoặc câu chuyện lột xác ("Pha xử lý dở khóc dở cười tại phòng trọ...").
+   - caption: Đoạn văn 3-5 câu giọng tâm sự, chia sẻ trải nghiệm thực tế, kết bằng câu hỏi mở kích thích người xem bình luận rôm rả.
+   - cta: Kêu gọi bình luận chia sẻ câu chuyện của bạn và Follow Page để xem video mới.
+   - hashtags: 4-6 tags thịnh hành (#Reels, #GocTroBatOn, #DoiSinhVien, #DoiPhongTro).
+   - full_post: Ghép hoàn chỉnh title + caption + cta + hashtags sẵn sàng copy.
+
+3. YOUTUBE SHORTS:
+   - title: Chứa từ khóa tìm kiếm chính xác (Search Intent) + Tình huống kịch tính (Dưới 60 ký tự).
+   - caption: 2 câu súc tích giải thích tình huống dở khóc dở cười trong video.
+   - cta: Kêu gọi Đăng ký kênh để không bỏ lỡ drama tiếp theo.
+   - hashtags: 3-5 tags chuẩn (#Shorts, #YouTubeShorts, từ khóa chính).
+   - full_post: Ghép hoàn chỉnh title + caption + cta + hashtags sẵn sàng copy.
+
+4. INSTAGRAM REELS:
+   - title: Bắt đầu và kết thúc bằng icon lấp lánh (✨ ... ✨).
+   - caption: Dạng bullet point (•) ngắn gọn, liệt kê các khoảnh khắc hài hước/bất ổn nhất của cuộc sống sinh viên.
+   - cta: Kêu gọi "Follow kênh & Lưu lại để giải trí mỗi ngày nhé! 🔖".
+   - hashtags: 8-10 tags mix Tiếng Việt + Tiếng Anh (#InstagramReels, #GocTroBatOn, #StudentLife, #DailyLife, #Funny, #Roommate).
+   - full_post: Ghép hoàn chỉnh title + caption + cta + hashtags sẵn sàng copy.
+
+ĐẦU RA BẮT BUỘC (JSON thuần túy):
+{{
+  "tiktok": {{ "title": "...", "caption": "...", "cta": "...", "hashtags": ["#tag1", ...], "full_post": "..." }},
+  "facebook": {{ "title": "...", "caption": "...", "cta": "...", "hashtags": ["#tag1", ...], "full_post": "..." }},
+  "shorts": {{ "title": "...", "caption": "...", "cta": "...", "hashtags": ["#tag1", ...], "full_post": "..." }},
+  "instagram": {{ "title": "...", "caption": "...", "cta": "...", "hashtags": ["#tag1", ...], "full_post": "..." }}
+}}
+"""
+    key = gemini_pool.get_key() or api_key or os.getenv("GEMINI_API_KEY")
+    if key:
+        for model_name in ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-2.0-flash"]:
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
+                payload = {
+                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                    "generationConfig": {"responseMimeType": "application/json", "temperature": 0.6}
+                }
+                resp = requests.post(url, json=payload, timeout=25)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    parsed = json.loads(raw_text)
+                    if "tiktok" in parsed and "facebook" in parsed:
+                        return parsed
+            except Exception:
+                continue
+
+    # Fallback mặc định an toàn
+    fallback_title = context_lines[0] if context_lines else "Cải tạo góc nhỏ siêu mê!"
+    return {
+        "tiktok": {
+            "title": f"🔥 {fallback_title}",
+            "caption": "Mấy bà thấy món này thế nào? Hack diện tích đỉnh chóp luôn!",
+            "cta": "Bấm giỏ hàng góc trái xem ngay nha! 🛒",
+            "hashtags": ["#phongtro", "#decor", "#tiktokshop", "#xuhuong", "#fyp"],
+            "full_post": f"🔥 {fallback_title}\n\nMấy bà thấy món này thế nào? Hack diện tích đỉnh chóp luôn!\n\n🛒 Bấm giỏ hàng góc trái xem ngay nha!\n\n#phongtro #decor #tiktokshop #xuhuong #fyp"
+        },
+        "facebook": {
+            "title": f"Phòng nhỏ biến hình như thế nào?",
+            "caption": f"Hôm nay mình chia sẻ mẹo này: {fallback_title}. Mọi người thấy ổn không?",
+            "cta": "Để lại bình luận bên dưới nha! 👇",
+            "hashtags": ["#phongtrodep", "#meonhacua", "#reviewgiadung"],
+            "full_post": f"Phòng nhỏ biến hình như thế nào?\n\nHôm nay mình chia sẻ mẹo này: {fallback_title}.\n\n👇 Để lại bình luận bên dưới nha!\n\n#phongtrodep #meonhacua #reviewgiadung"
+        },
+        "shorts": {
+            "title": f"Mẹo cải tạo phòng nhỏ cực đỉnh | {fallback_title}",
+            "caption": f"Hướng dẫn tối ưu diện tích phòng nhỏ nhanh gọn.",
+            "cta": "Đăng ký kênh xem thêm mẹo hay! ▶️",
+            "hashtags": ["#Shorts", "#YouTubeShorts", "#Decor"],
+            "full_post": f"Mẹo cải tạo phòng nhỏ cực đỉnh | {fallback_title}\n\nHướng dẫn tối ưu diện tích phòng nhỏ nhanh gọn.\n\n▶️ Đăng ký kênh xem thêm mẹo hay!\n\n#Shorts #YouTubeShorts #Decor"
+        },
+        "instagram": {
+            "title": f"✨ ROOM MAKEOVER ✨",
+            "caption": f"• {fallback_title}\n• Tối ưu không gian sống\n• Minimalist & Aesthetic",
+            "cta": "Lưu lại để decor phòng nhé! 🔖",
+            "hashtags": ["#homedecor", "#smallspaceliving", "#interiordesign", "#reelsinstagram"],
+            "full_post": f"✨ ROOM MAKEOVER ✨\n\n• {fallback_title}\n• Tối ưu không gian sống\n• Minimalist & Aesthetic\n\n🔖 Lưu lại để decor phòng nhé!\n\n#homedecor #smallspaceliving #interiordesign #reelsinstagram"
+        }
+    }
+
+
+def generate_social_post_caption(
+    segments: List[Dict[str, Any]],
+    channel_profile: Optional[str] = None,
+    api_key: Optional[str] = None
+) -> Dict[str, Any]:
+    """Tương thích ngược: Lấy gói TikTok từ 4-platform package."""
+    pkg = generate_4_platform_social_package(segments, channel_profile, api_key)
+    return pkg.get("tiktok", {})
