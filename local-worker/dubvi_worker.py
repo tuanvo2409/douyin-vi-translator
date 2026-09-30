@@ -1488,5 +1488,465 @@ def main() -> None:
         time.sleep(settings.poll_seconds)
 
 
+
+
+# ===========================================================================
+# Studio Autopilot Helper Integrations (ASR Harness, OCR Tracking, CTA/Logo)
+# ===========================================================================
+
+def aggregate_whisper_segments(
+    raw_segments: list[dict[str, Any]],
+    max_gap_ms: int = 350,
+    max_dur_ms: int = 4200,
+    min_dur_ms: int = 1200
+) -> list[dict[str, Any]]:
+    """Hợp nhất các mẩu thoại vi mô của Whisper thành các câu hoàn chỉnh có nghĩa."""
+    merged: list[dict[str, Any]] = []
+    curr: dict[str, Any] | None = None
+
+    for s in raw_segments:
+        text = (s.get("text") or s.get("asrTextZh") or s.get("chinese_text") or "").strip()
+        if not text:
+            continue
+        st = s.get("startMs", 0)
+        et = s.get("endMs", 0)
+
+        if curr is None:
+            curr = {
+                "startMs": st,
+                "endMs": et,
+                "texts": [text],
+                "sub_segments": [s]
+            }
+            continue
+
+        gap = st - curr["endMs"]
+        cur_dur = et - curr["startMs"]
+
+        has_punctuation = any(curr["texts"][-1].endswith(p) for p in ("。", "！", "？", "!", "?", "；"))
+        is_too_long = cur_dur > max_dur_ms
+        is_long_pause = gap > max_gap_ms and (curr["endMs"] - curr["startMs"]) >= min_dur_ms
+
+        if is_too_long or has_punctuation or is_long_pause:
+            merged.append({
+                "position": len(merged),
+                "startMs": curr["startMs"],
+                "endMs": curr["endMs"],
+                "duration_s": round((curr["endMs"] - curr["startMs"]) / 1000.0, 2),
+                "asrTextZh": "".join(curr["texts"]),
+                "chinese_text": "".join(curr["texts"]),
+                "confidence": 95,
+            })
+            curr = {
+                "startMs": st,
+                "endMs": et,
+                "texts": [text],
+                "sub_segments": [s]
+            }
+        else:
+            curr["endMs"] = et
+            curr["texts"].append(text)
+            curr["sub_segments"].append(s)
+
+    if curr and curr["texts"]:
+        merged.append({
+            "position": len(merged),
+            "startMs": curr["startMs"],
+            "endMs": curr["endMs"],
+            "duration_s": round((curr["endMs"] - curr["startMs"]) / 1000.0, 2),
+            "asrTextZh": "".join(curr["texts"]),
+            "chinese_text": "".join(curr["texts"]),
+            "confidence": 95,
+        })
+
+    return merged
+
+
+_rapidocr_engine = None
+
+
+def auto_detect_subtitle_roi(video_path: Path, sample_count: int = 8) -> dict[str, Any]:
+    """Quét tự động vị trí Y và kích thước chữ phụ đề gốc tiếng Trung."""
+    try:
+        import cv2
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError:
+        return {
+            "has_hardsub": False,
+            "yPercent": 75.0,
+            "yCenterPx": 1440,
+            "avgHeightPx": 60,
+            "boxBlurY": 1380,
+            "boxBlurH": 120
+        }
+
+    global _rapidocr_engine
+    if _rapidocr_engine is None:
+        try:
+            _rapidocr_engine = RapidOCR()
+        except Exception:
+            return {
+                "has_hardsub": False,
+                "yPercent": 75.0,
+                "yCenterPx": 1440,
+                "avgHeightPx": 60,
+                "boxBlurY": 1380,
+                "boxBlurH": 120
+            }
+    engine = _rapidocr_engine
+
+    cap = cv2.VideoCapture(str(video_path))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1080
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1920
+
+    if total_frames <= 0:
+        cap.release()
+        return {"has_hardsub": False, "yPercent": 75.0, "yCenterPx": int(height * 0.75), "avgHeightPx": 60, "boxBlurY": int(height * 0.75 - 60), "boxBlurH": 120}
+
+    step = max(1, total_frames // (sample_count + 1))
+    detected_boxes = []
+
+    for i in range(1, sample_count + 1):
+        frame_idx = i * step
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            continue
+
+        crop_y_start = int(height * 0.50)
+        crop_bottom = frame[crop_y_start:, :]
+
+        try:
+            result, _ = engine(crop_bottom)
+        except Exception:
+            continue
+        if not result:
+            continue
+
+        for item in result:
+            box = item[0]
+            text = item[1]
+            score = float(item[2])
+
+            if score < 0.48 or len(text) < 2:
+                continue
+
+            xs = [p[0] for p in box]
+            ys = [p[1] + crop_y_start for p in box]
+
+            box_x = min(xs)
+            box_y = min(ys)
+            box_w = max(xs) - min(xs)
+            box_h = max(ys) - min(ys)
+
+            if 20 <= box_h <= 160 and box_w >= 100 and (box_y / height) >= 0.52:
+                detected_boxes.append({
+                    "text": text,
+                    "x": box_x,
+                    "y": box_y,
+                    "w": box_w,
+                    "h": box_h,
+                    "y_center": box_y + box_h / 2.0,
+                    "y_percent": (box_y + box_h / 2.0) / height * 100.0,
+                    "score": score
+                })
+
+    cap.release()
+
+    if not detected_boxes:
+        return {
+            "has_hardsub": False,
+            "yPercent": 75.0,
+            "yCenterPx": int(height * 0.75),
+            "avgHeightPx": 60,
+            "boxBlurY": int(height * 0.75 - 60),
+            "boxBlurH": 120
+        }
+
+    avg_y_center = sum(b["y_center"] for b in detected_boxes) / len(detected_boxes)
+    avg_h = sum(b["h"] for b in detected_boxes) / len(detected_boxes)
+    avg_y_percent = (avg_y_center / height) * 100.0
+
+    blur_h = int(avg_h + 40)
+    blur_y = max(0, int(avg_y_center - blur_h / 2.0))
+
+    return {
+        "has_hardsub": True,
+        "sampleCount": len(detected_boxes),
+        "yPercent": round(avg_y_percent, 2),
+        "yCenterPx": int(avg_y_center),
+        "avgHeightPx": int(avg_h),
+        "boxBlurY": blur_y,
+        "boxBlurH": blur_h
+    }
+
+
+def attach_dynamic_subtitle_coordinates(
+    video_path: Path,
+    segments: list[dict[str, Any]],
+    roi: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Định vị tọa độ Y thực tế của phụ đề gốc từng câu thoại."""
+    try:
+        import cv2
+        import re
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError:
+        return segments
+
+    global _rapidocr_engine
+    if _rapidocr_engine is None:
+        try:
+            _rapidocr_engine = RapidOCR()
+        except Exception:
+            return segments
+    ocr = _rapidocr_engine
+
+    cap = cv2.VideoCapture(str(video_path))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    dur = total_frames / fps if fps > 0 else 0
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1920
+    default_y = int(roi.get("yCenterPx", int(height * 0.75)))
+    crop_y_start = int(height * 0.40)
+
+    for seg in segments:
+        st_s = seg.get("startMs", 0) / 1000.0
+        et_s = seg.get("endMs", 0) / 1000.0
+        t_mid = (st_s + et_s) / 2.0
+        if t_mid >= dur:
+            t_mid = max(0.0, dur - 0.2)
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(t_mid * fps))
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            seg["yCenterPx"] = default_y
+            continue
+
+        crop = frame[crop_y_start:, :]
+        try:
+            res, _ = ocr(crop)
+        except Exception:
+            res = None
+
+        has_zh = res and any(re.search(r'[一-鿿]', item[1]) for item in res)
+        if not has_zh:
+            crop_flipped = cv2.flip(crop, 1)
+            try:
+                res_flipped, _ = ocr(crop_flipped)
+            except Exception:
+                res_flipped = None
+            if res_flipped and any(re.search(r'[一-鿿]', item[1]) for item in res_flipped):
+                res = res_flipped
+
+        if not res:
+            seg["yCenterPx"] = None
+            continue
+
+        zh_boxes = []
+        for item in res:
+            text = item[1].strip()
+            score = float(item[2])
+            if score < 0.40 or len(text) < 1:
+                continue
+            if not re.search(r'[一-鿿]', text):
+                continue
+            ys = [p[1] + crop_y_start for p in item[0]]
+            min_y = min(ys)
+            max_y = max(ys)
+            h = max_y - min_y
+            if 20 <= h <= 180:
+                center_y = int((min_y + max_y) / 2.0)
+                zh_boxes.append((score, center_y, h))
+
+        if zh_boxes:
+            zh_boxes.sort(key=lambda b: -b[0])
+            best_score, best_cy, best_h = zh_boxes[0]
+            seg["yCenterPx"] = best_cy
+            seg["boxHeightPx"] = best_h
+        else:
+            seg["yCenterPx"] = None
+
+    cap.release()
+
+    valid_ys = [s["yCenterPx"] for s in segments if s.get("yCenterPx") is not None]
+    if valid_ys:
+        median_y = int(sorted(valid_ys)[len(valid_ys) // 2])
+        for s in segments:
+            if s.get("yCenterPx") is None:
+                s["yCenterPx"] = median_y
+    else:
+        fallback_y = int(roi.get("yCenterPx", int(height * 0.50)))
+        if fallback_y > int(height * 0.65):
+            fallback_y = int(height * 0.50)
+        for s in segments:
+            if s.get("yCenterPx") is None:
+                s["yCenterPx"] = fallback_y
+
+    return segments
+
+
+def generate_channel_logo_badge(
+    avatar_path: Path | str | None,
+    output_path: Path,
+    size_px: int = 200,
+    opacity: float = 0.70,
+    border_w: int = 5
+) -> Path | None:
+    """Tự động cắt tròn và làm mờ Avatar kênh theo chuẩn nhận diện thương hiệu."""
+    if not avatar_path or not Path(avatar_path).exists():
+        return None
+    try:
+        from PIL import Image, ImageDraw, ImageOps
+        img = Image.open(str(avatar_path)).convert("RGBA")
+        size = (size_px, size_px)
+        img = img.resize(size, Image.Resampling.LANCZOS)
+
+        mask = Image.new("L", size, 0)
+        draw = ImageDraw.Draw(mask)
+        draw.ellipse((0, 0, size[0], size[1]), fill=255)
+
+        circular_img = ImageOps.fit(img, size, centering=(0.5, 0.5))
+        circular_img.putalpha(mask)
+
+        border_img = Image.new("RGBA", (size[0] + border_w * 2, size[1] + border_w * 2), (0, 0, 0, 0))
+        draw_b = ImageDraw.Draw(border_img)
+        draw_b.ellipse((0, 0, border_img.width - 1, border_img.height - 1), fill=(255, 255, 255, 255))
+        border_img.paste(circular_img, (border_w, border_w), circular_img)
+
+        for x in range(border_img.width):
+            for y in range(border_img.height):
+                r, g, b, a = border_img.getpixel((x, y))
+                if a > 0:
+                    border_img.putpixel((x, y), (r, g, b, int(a * opacity)))
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        border_img.save(str(output_path), "PNG")
+        return output_path
+    except Exception as exc:
+        logger.warning("Lỗi sinh avatar badge: %s", exc)
+        return None
+
+
+CTA_VARIATIONS: dict[str, list[str]] = {
+    "page_goc_tro_bat_on": [
+        "Xem cuốn thế này mà tiếc cái nút follow hả?!",
+        "Không follow lẹ là trọ bất ổn giống vậy đó nha!",
+        "Xem chùa không follow là tối trọ bất ổn nha!"
+    ],
+    "page_giai_cuu_chuong_lon": [
+        "Không follow coi chừng phòng thành chuồng lợn nha!",
+        "Xem cuốn thế này mà tiếc nút follow hả trời?!",
+        "Bấm follow lẹ đi, tiếc gì một cái click hả?!"
+    ]
+}
+
+
+def get_raw_cta_video_path(channel_profile: str) -> Path | None:
+    return None
+
+
+def build_dynamic_cta_clip(
+    channel_profile: str,
+    voice_name: str,
+    settings: Settings,
+    output_path: Path,
+    variation_idx: int | None = None
+) -> tuple[Path | None, float]:
+    """Tạo video CTA động nếu có raw CTA video."""
+    raw_cta = get_raw_cta_video_path(channel_profile)
+    if not raw_cta or not Path(raw_cta).exists():
+        return None, 0.0
+
+    key = "page_goc_tro_bat_on" if "goc_tro" in channel_profile.lower() else "page_giai_cuu_chuong_lon"
+    var_list = CTA_VARIATIONS.get(key, CTA_VARIATIONS["page_giai_cuu_chuong_lon"])
+    if variation_idx is not None:
+        cta_text = var_list[variation_idx % len(var_list)]
+    else:
+        import random
+        cta_text = random.choice(var_list)
+
+    temp_audio = output_path.parent / f"temp_cta_voice_{output_path.stem}.mp3"
+    synthesize(cta_text, voice_name, temp_audio, settings)
+    if not temp_audio.is_file() or temp_audio.stat().st_size == 0:
+        return None, 0.0
+
+    dur_voice = ffprobe_duration(temp_audio)
+    target_dur = max(1.8, min(dur_voice + 0.15, 2.2))
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-t", f"{target_dur:.3f}", "-i", str(raw_cta),
+        "-i", str(temp_audio),
+        "-filter_complex",
+        f"[0:v]scale=1080:1920,fps=30[v];[1:a]apad,atrim=0:{target_dur:.3f},loudnorm=I=-14:TP=-1.5:LRA=11[a]",
+        "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "aac", "-movflags", "+faststart",
+        str(output_path)
+    ]
+    run(cmd)
+    temp_audio.unlink(missing_ok=True)
+
+    actual_dur = ffprobe_duration(output_path) if output_path.is_file() else target_dur
+    return output_path, actual_dur
+
+
+def splice_cta_into_video(
+    main_video: Path,
+    cta_video: Path | None,
+    output_path: Path,
+    insert_ratio: float = 0.70,
+    insert_sec: float | None = None
+) -> Path:
+    """Chèn clip CTA vào video chính tại thời điểm ~70% thời lượng."""
+    if not cta_video or not Path(cta_video).is_file():
+        shutil.copy2(main_video, output_path)
+        return output_path
+
+    total_dur = ffprobe_duration(main_video)
+    if insert_sec is not None:
+        actual_insert = insert_sec
+    else:
+        actual_insert = round(total_dur * insert_ratio, 2)
+
+    if actual_insert >= total_dur - 2.0:
+        actual_insert = max(0.0, total_dur - 2.0)
+
+    if actual_insert <= 0.5 or actual_insert >= total_dur:
+        filter_str = (
+            "[0:v]scale=1080:1920,setsar=1,fps=30,setpts=PTS-STARTPTS[v0];"
+            "[0:a]aresample=44100,asetpts=PTS-STARTPTS[a0];"
+            "[1:v]scale=1080:1920,setsar=1,fps=30,setpts=PTS-STARTPTS[v1];"
+            "[1:a]aresample=44100,asetpts=PTS-STARTPTS[a1];"
+            "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
+        )
+    else:
+        filter_str = (
+            f"[0:v]trim=0:{actual_insert},scale=1080:1920,setsar=1,fps=30,setpts=PTS-STARTPTS[v1];"
+            f"[0:a]atrim=0:{actual_insert},aresample=44100,asetpts=PTS-STARTPTS[a1];"
+            f"[1:v]scale=1080:1920,setsar=1,fps=30,setpts=PTS-STARTPTS[v2];"
+            f"[1:a]aresample=44100,asetpts=PTS-STARTPTS[a2];"
+            f"[0:v]trim=start={actual_insert},scale=1080:1920,setsar=1,fps=30,setpts=PTS-STARTPTS[v3];"
+            f"[0:a]atrim=start={actual_insert},aresample=44100,asetpts=PTS-STARTPTS[a3];"
+            f"[v1][a1][v2][a2][v3][a3]concat=n=3:v=1:a=1[v][a]"
+        )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(main_video),
+        "-i", str(cta_video),
+        "-filter_complex", filter_str,
+        "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "20", "-threads", "2",
+        "-c:a", "aac", "-movflags", "+faststart",
+        str(output_path)
+    ]
+    run(cmd)
+    return output_path
+
+
 if __name__ == "__main__":
     main()
