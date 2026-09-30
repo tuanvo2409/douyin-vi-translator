@@ -72,8 +72,14 @@ không có trong nguồn. Không tự đổi câu đầu thành hook. Giữ từ
 vẹn và trả về đúng một câu không rỗng cho mỗi position được yêu cầu. Tôn trọng
 `max_words` để TTS đọc tự nhiên; không dùng mẹo nén thời gian.
 
+PHÂN VAI ĐỐI THOẠI (MULTI-SPEAKER / 2 VOICES):
+Đặc biệt chú ý ngữ cảnh đối thoại giữa các nhân vật trong video:
+- "speaker_1": Giọng dẫn chính / Người quay / Nhân vật bóc phốt / Người hỏi
+- "speaker_2": Nhân vật đối thoại thứ 2 (ví dụ: bạn cùng phòng đang cãi lại, người đối đáp)
+Nếu video là đối thoại qua lại giữa 2 người, BẮT BUỘC phân biệt rõ ràng câu nào là của "speaker_1", câu nào là của "speaker_2". Nếu video chỉ có 1 người nói độc thoại từ đầu đến cuối thì gán tất cả là "speaker_1".
+
 Chỉ trả JSON thuần túy:
-{{"translations": [{{"position": 0, "translatedTextVi": "..."}}]}}
+{{"translations": [{{"position": 0, "translatedTextVi": "...", "speaker": "speaker_1"}}]}}
 """
 
 VIDEOLINGO_TIKTOK_SYSTEM_PROMPT = build_system_prompt()
@@ -520,6 +526,13 @@ def translate_with_deepseek(
                     seen.add(position)
                     if is_valid_translation_text(translated):
                         expected[position]["translatedTextVi"] = clean_vietnamese_text(translated)
+                        speaker = item.get("speaker")
+                        if speaker in ("speaker_1", "speaker_2", "speaker_female", "speaker_male"):
+                            expected[position]["speaker"] = speaker
+                        elif isinstance(speaker, str) and speaker.strip():
+                            expected[position]["speaker"] = speaker.strip().lower()
+                        else:
+                            expected[position]["speaker"] = "speaker_1"
             pending = [cue for cue in pending if not cue.get("translatedTextVi")]
         for cue in pending:
             cue["needsReview"] = True
