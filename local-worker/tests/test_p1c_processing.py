@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
 import tempfile
 import unittest
 import uuid
@@ -240,10 +241,108 @@ class ProcessingTests(unittest.TestCase):
              patch.object(p1c_processing, "load_translator_envelope", return_value=accepted), \
              patch.object(p1c_processing, "_accepted_matches", return_value=True), \
              patch.object(p1c_processing, "_started_matches", return_value=True), \
+             patch.object(p1c_processing, "build_canonical_runtime_config", return_value={"sourceEvidenceMode": "cloud_asr", "sourceOcrVerify": False}), \
              patch.object(p1c_processing, "_modern_process_job") as process:
             with self.assertRaisesRegex(p1c_processing.CanonicalProcessingError, "local source evidence"):
                 run_child_job(self.settings, self.ids["translator"])
         process.assert_not_called()
+
+    def test_page2_run_child_job_allows_multimodal_av_with_ocr_verify(self):
+        publish_status_event(self.settings, self.started)
+        page2_document = {
+            **self.document,
+            "localization_profile": "page_giai_cuu_chuong_lon",
+            "execution_profile": "page_giai_cuu_chuong_lon",
+        }
+        accepted = SimpleNamespace(
+            document=page2_document,
+            handoff_media_path=self.settings.media_dir / self.document["handoff_media_ref"],
+        )
+        called = False
+
+        def fake_process(legacy_settings, adapter, job, **kwargs):
+            nonlocal called
+            called = True
+            target = legacy_settings.output_dir / job["id"] / "page2_out.mp4"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"page2 rendered bytes")
+            adapter.report(job["id"], "complete", 100, status="complete", output_path=str(target))
+
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-key", "DUBVI_POLICY_MODE": "off"}, clear=False), \
+             patch.object(p1c_processing, "load_translator_envelope", return_value=accepted), \
+             patch.object(p1c_processing, "_accepted_matches", return_value=True), \
+             patch.object(p1c_processing, "_started_matches", return_value=True), \
+             patch.object(p1c_processing, "_modern_process_job", side_effect=fake_process):
+            receipt = run_child_job(self.settings, self.ids["translator"])
+
+        self.assertTrue(called)
+        self.assertEqual("succeeded", receipt["outcome"])
+
+    def test_modern_child_job_deep_policy_enforce_reject(self):
+        publish_status_event(self.settings, self.started)
+        reject_eval = SimpleNamespace(
+            overall_decision=SimpleNamespace(value="reject"),
+            reason_codes=("VIOLATION",),
+            needs_review=False,
+            evaluated_at="2026-09-11T00:00:00.000Z",
+        )
+
+        def mock_modern_p1c(*args, **kwargs):
+            out_file = Path(args[1]) / "cand.mp4"
+            out_file.parent.mkdir(parents=True, exist_ok=True)
+            out_file.write_bytes(b"cand")
+            return {
+                "outputPath": str(out_file),
+                "records": [{"utteranceId": "u1", "sourceTextZh": "test"}],
+                "deepPolicy": reject_eval,
+            }
+
+        with patch.dict(os.environ, {"DUBVI_POLICY_MODE": "enforce"}, clear=False), \
+             patch("modern_p1c_adapter.run_modern_p1c", side_effect=mock_modern_p1c):
+            receipt = run_child_job(self.settings, self.ids["translator"])
+
+        self.assertEqual("rejected", receipt["outcome"])
+        self.assertEqual("DEEP_POLICY_REJECT", receipt["error_classification"])
+        self.assertIsNotNone(receipt.get("deep_policy"))
+        self.assertEqual("reject", receipt["deep_policy"]["overall_decision"])
+        self.assertEqual(["VIOLATION"], receipt["deep_policy"]["reason_codes"])
+        self.assertEqual("enforce", receipt["deep_policy"]["mode"])
+
+    def test_spawn_processing_child_does_not_deadlock_on_large_stderr(self):
+        script_code = (
+            "import sys; "
+            "from dubvi_engine_contract import canonical_json_bytes; "
+            "sys.stderr.write('E' * 131072); "
+            "sys.stderr.flush(); "
+            "receipt = {"
+            "  'receipt_version': 1,"
+            "  'message_kind': 'translator_processing_receipt',"
+            "  'translator_job_id': sys.argv[1],"
+            "  'attempt_number': 1,"
+            "  'outcome': 'failed',"
+            "  'error_classification': 'PROCESSING_FAILED'"
+            "}; "
+            "sys.stdout.buffer.write(canonical_json_bytes(receipt)); "
+            "sys.stdout.flush()"
+        )
+        job_id = self.ids["translator"]
+        orig_popen = p1c_processing.subprocess.Popen
+
+        def mock_popen(argv, **kwargs):
+            custom_argv = [sys.executable, "-c", script_code, job_id]
+            return orig_popen(custom_argv, **kwargs)
+
+        with patch.object(p1c_processing.subprocess, "Popen", side_effect=mock_popen):
+            handle = p1c_processing.spawn_processing_child(self.settings, self.document)
+            exit_code = handle.wait(timeout=5)
+            self.assertEqual(0, exit_code)
+            receipt = handle.read_receipt()
+            self.assertEqual("failed", receipt["outcome"])
+
+        stderr_log = self.settings.output_dir / ".p1c-work" / f"{job_id}.stderr.log"
+        self.assertTrue(stderr_log.is_file())
+        self.assertEqual(131072, stderr_log.stat().st_size)
+        self.assertTrue(handle.stderr_file.closed)
 
     def test_typed_canonical_policy_outcomes_are_distinct(self):
         deep = {"policy_schema_version": 1, "mode": "enforce", "overall_decision": "reject", "reason_codes": ["R"], "needs_review": False, "evaluated_at": "2026-09-11T00:00:00.000Z"}

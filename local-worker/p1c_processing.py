@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from dubvi_engine_contract import (
     ContractValidationError,
@@ -73,29 +73,37 @@ class CanonicalOutput:
 @dataclass(frozen=True)
 class CanonicalChildHandle:
     process: subprocess.Popen[bytes]
+    stderr_file: Any | None = None
 
     def poll(self) -> object:
         return self.process.poll()
 
     def terminate(self) -> None:
-        if self.process.poll() is not None:
-            return
-        if os.name == "nt":
-            subprocess.run(
-                [
-                    "taskkill",
-                    "/PID",
-                    str(self.process.pid),
-                    "/T",
-                    "/F",
-                ],
-                shell=False,
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:
-            self.process.terminate()
+        try:
+            if self.process.poll() is not None:
+                return
+            if os.name == "nt":
+                subprocess.run(
+                    [
+                        "taskkill",
+                        "/PID",
+                        str(self.process.pid),
+                        "/T",
+                        "/F",
+                    ],
+                    shell=False,
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                self.process.terminate()
+        finally:
+            if self.stderr_file is not None and not getattr(self.stderr_file, "closed", True):
+                try:
+                    self.stderr_file.close()
+                except Exception:
+                    pass
 
     def wait(self, timeout: float | None = None) -> object:
         return self.process.wait(timeout=timeout)
@@ -105,6 +113,12 @@ class CanonicalChildHandle:
             stdout, _stderr = self.process.communicate(timeout=2)
         except subprocess.TimeoutExpired as error:
             raise CanonicalProcessingError("Translator child did not close its bounded receipt") from error
+        finally:
+            if self.stderr_file is not None and not getattr(self.stderr_file, "closed", True):
+                try:
+                    self.stderr_file.close()
+                except Exception:
+                    pass
         if len(stdout) > MAX_RECEIPT_BYTES:
             raise CanonicalProcessingError("Translator child receipt exceeds 64KiB")
         try:
@@ -115,6 +129,13 @@ class CanonicalChildHandle:
             return receipt
         except ContractValidationError as error:
             raise CanonicalProcessingError(f"Translator child receipt is invalid: {error}") from error
+
+    def __del__(self) -> None:
+        if self.stderr_file is not None and not getattr(self.stderr_file, "closed", True):
+            try:
+                self.stderr_file.close()
+            except Exception:
+                pass
 
 
 class CanonicalRpcAdapter:
@@ -210,9 +231,26 @@ def normalize_deep_policy(policy_result: object, mode: str) -> dict[str, object]
     if mode not in {"off", "review", "enforce"}:
         raise CanonicalProcessingError("canonical policy mode is invalid")
     decision = getattr(getattr(policy_result, "overall_decision", None), "value", None)
+    if decision is None:
+        raw_decision = getattr(policy_result, "overall_decision", None)
+        if isinstance(raw_decision, str):
+            decision = raw_decision
+    if decision is None and isinstance(policy_result, Mapping):
+        raw_decision = policy_result.get("overall_decision")
+        if hasattr(raw_decision, "value"):
+            decision = raw_decision.value
+        elif isinstance(raw_decision, str):
+            decision = raw_decision
     reason_codes = getattr(policy_result, "reason_codes", None)
     needs_review = getattr(policy_result, "needs_review", None)
     evaluated_at = getattr(policy_result, "evaluated_at", None)
+    if isinstance(policy_result, Mapping):
+        if reason_codes is None:
+            reason_codes = policy_result.get("reason_codes")
+        if needs_review is None:
+            needs_review = policy_result.get("needs_review")
+        if evaluated_at is None:
+            evaluated_at = policy_result.get("evaluated_at")
     if (
         decision not in {"pass", "reject", "review", "error", "unavailable"}
         or not isinstance(reason_codes, (tuple, list))
@@ -305,6 +343,10 @@ def spawn_processing_child(settings: P1CSettings, document: Mapping[str, object]
     environment["PYTHONPATH"] = worker_root + (
         os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else ""
     )
+    work_base = settings.output_dir / ".p1c-work"
+    _make_directory_chain(settings.output_dir, work_base)
+    stderr_log_path = work_base / f"{job_id}.stderr.log"
+    stderr_file = open(stderr_log_path, "wb")
     try:
         process = subprocess.Popen(
             argv,
@@ -313,11 +355,12 @@ def spawn_processing_child(settings: P1CSettings, document: Mapping[str, object]
             shell=False,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=stderr_file,
         )
     except OSError as error:
+        stderr_file.close()
         raise CanonicalProcessingError("Translator processing child could not start") from error
-    return CanonicalChildHandle(process)
+    return CanonicalChildHandle(process, stderr_file=stderr_file)
 
 
 def run_canonical_processing(
@@ -393,115 +436,125 @@ def run_child_job(settings: P1CSettings, translator_job_id: str) -> dict[str, ob
     work_root.mkdir(exist_ok=True)
     if work_root.is_symlink() or not work_root.is_dir():
         raise CanonicalProcessingError("Translator attempt work root is not a real directory")
-    source_ref = str(accepted.document["handoff_media_ref"])
-    source = accepted.handoff_media_path
-    _assert_contained(settings.media_dir, source)
-    if source.is_symlink() or not source.is_file() or source.stat().st_size <= 0:
-        raise CanonicalProcessingError("Translator source handoff is not a usable regular file")
-
-    policy_mode = os.environ.get("DUBVI_POLICY_MODE", "off").strip().lower()
-    if policy_mode not in {"off", "review", "enforce"}:
-        raise CanonicalProcessingError("DUBVI_POLICY_MODE must be off, review, or enforce")
-    profile = resolve_canonical_profile(accepted.document)
-    runtime_config = build_canonical_runtime_config(accepted.document)
-    if profile.profile_id == "page_giai_cuu_chuong_lon" and runtime_config.get("sourceEvidenceMode") != "local_asr_text_only":
-        raise CanonicalProcessingError("Page 2 requires local source evidence before media processing")
-    if runtime_config.get("localizationProvider") == "deepseek" and not os.environ.get("DEEPSEEK_API_KEY", "").strip():
-        raise CanonicalProcessingError("DEEPSEEK_API_KEY is required for canonical localization")
-    identity_fields = (
-        "translator_job_id",
-        "dispatch_id",
-        "reup_job_id",
-        "handoff_id",
-        "candidate_id",
-        "schedule_id",
-    )
-    identity = {field: accepted.document.get(field) for field in identity_fields}
-    if any(not isinstance(value, str) or not value.strip() for value in identity.values()):
-        raise CanonicalProcessingError("Translator envelope identity chain is incomplete")
-    if identity["translator_job_id"] != job_id:
-        raise CanonicalProcessingError("Translator envelope identity differs from child argument")
-    legacy_job = {
-        "id": job_id,
-        "sourceKey": source_ref,
-        "sourceName": source.name,
-        "configJson": runtime_config,
-        "attempt_number": 1,
-        "localizationProfile": profile.profile_id,
-        "modernProfile": profile,
-        "sourcePath": str(source),
-        "outputDir": str(work_root),
-        "translatorJobId": identity["translator_job_id"],
-        "dispatchId": identity["dispatch_id"],
-        "reupJobId": identity["reup_job_id"],
-        "handoffId": identity["handoff_id"],
-        "candidateId": identity["candidate_id"],
-        "scheduleId": identity["schedule_id"],
-    }
-    adapter = CanonicalRpcAdapter()
-    policy_holder: dict[str, object] = {"deep_policy": None}
-
-    def observe_policy(policy_result: object) -> None:
-        deep_policy = normalize_deep_policy(policy_result, policy_mode)
-        policy_holder["deep_policy"] = deep_policy
-        if deep_policy is None:
-            return
-        decision = deep_policy["overall_decision"]
-        if policy_mode == "enforce" and decision == "reject":
-            raise CanonicalPolicyReject(deep_policy)
-        if policy_mode == "enforce" and decision in {"review", "error", "unavailable"}:
-            raise CanonicalPolicyReviewRequired(deep_policy)
-
-    legacy_settings = _legacy_settings(settings, work_base, policy_mode)
     try:
-        _modern_process_job(
-            legacy_settings,
-            adapter,
-            legacy_job,
-            policy_observer=observe_policy,
-            canonical_policy_outcomes=True,
+        source_ref = str(accepted.document["handoff_media_ref"])
+        source = accepted.handoff_media_path
+        _assert_contained(settings.media_dir, source)
+        if source.is_symlink() or not source.is_file() or source.stat().st_size <= 0:
+            raise CanonicalProcessingError("Translator source handoff is not a usable regular file")
+
+        policy_mode = os.environ.get("DUBVI_POLICY_MODE", "off").strip().lower()
+        if policy_mode not in {"off", "review", "enforce"}:
+            raise CanonicalProcessingError("DUBVI_POLICY_MODE must be off, review, or enforce")
+        profile = resolve_canonical_profile(accepted.document)
+        runtime_config = build_canonical_runtime_config(accepted.document)
+        if profile.profile_id == "page_giai_cuu_chuong_lon" and (
+            runtime_config.get("sourceEvidenceMode") not in {"local_asr_text_only", "multimodal_av"}
+            or runtime_config.get("sourceOcrVerify") is not True
+        ):
+            raise CanonicalProcessingError("Page 2 requires local source evidence before media processing")
+        if runtime_config.get("localizationProvider") == "deepseek" and not os.environ.get("DEEPSEEK_API_KEY", "").strip():
+            raise CanonicalProcessingError("DEEPSEEK_API_KEY is required for canonical localization")
+        identity_fields = (
+            "translator_job_id",
+            "dispatch_id",
+            "reup_job_id",
+            "handoff_id",
+            "candidate_id",
+            "schedule_id",
         )
-    except CanonicalPolicyReject as error:
-        return _receipt(job_id, "rejected", deep_policy=error.deep_policy, error_classification="DEEP_POLICY_REJECT")
-    except CanonicalPolicyReviewRequired as error:
-        return _receipt(job_id, "review_required", deep_policy=error.deep_policy, error_classification="DEEP_POLICY_REVIEW")
-    except Exception as error:
-        diagnostic = str(error)
-        from modern_p1c_adapter import SourceReviewRequiredError
+        identity = {field: accepted.document.get(field) for field in identity_fields}
+        if any(not isinstance(value, str) or not value.strip() for value in identity.values()):
+            raise CanonicalProcessingError("Translator envelope identity chain is incomplete")
+        if identity["translator_job_id"] != job_id:
+            raise CanonicalProcessingError("Translator envelope identity differs from child argument")
+        legacy_job = {
+            "id": job_id,
+            "sourceKey": source_ref,
+            "sourceName": source.name,
+            "configJson": runtime_config,
+            "attempt_number": 1,
+            "localizationProfile": profile.profile_id,
+            "modernProfile": profile,
+            "sourcePath": str(source),
+            "outputDir": str(work_root),
+            "translatorJobId": identity["translator_job_id"],
+            "dispatchId": identity["dispatch_id"],
+            "reupJobId": identity["reup_job_id"],
+            "handoffId": identity["handoff_id"],
+            "candidateId": identity["candidate_id"],
+            "scheduleId": identity["schedule_id"],
+        }
+        adapter = CanonicalRpcAdapter()
+        policy_holder: dict[str, object] = {"deep_policy": None}
+
+        def observe_policy(policy_result: object) -> None:
+            deep_policy = normalize_deep_policy(policy_result, policy_mode)
+            policy_holder["deep_policy"] = deep_policy
+            if deep_policy is None:
+                return
+            decision = deep_policy["overall_decision"]
+            if policy_mode == "enforce" and decision == "reject":
+                raise CanonicalPolicyReject(deep_policy)
+            if policy_mode == "enforce" and decision in {"review", "error", "unavailable"}:
+                raise CanonicalPolicyReviewRequired(deep_policy)
+            if policy_mode == "review" and (decision != "pass" or deep_policy["needs_review"]):
+                raise CanonicalPolicyReviewRequired(deep_policy)
+
+        legacy_settings = _legacy_settings(settings, work_base, policy_mode)
+        try:
+            _modern_process_job(
+                legacy_settings,
+                adapter,
+                legacy_job,
+                policy_observer=observe_policy,
+                canonical_policy_outcomes=True,
+            )
+        except CanonicalPolicyReject as error:
+            return _receipt(job_id, "rejected", deep_policy=error.deep_policy, error_classification="DEEP_POLICY_REJECT")
+        except CanonicalPolicyReviewRequired as error:
+            return _receipt(job_id, "review_required", deep_policy=error.deep_policy, error_classification="DEEP_POLICY_REVIEW")
+        except Exception as error:
+            diagnostic = str(error)
+            from modern_p1c_adapter import SourceReviewRequiredError
+            return _receipt(
+                job_id,
+                "failed",
+                deep_policy=policy_holder["deep_policy"],
+                error_classification="SOURCE_REVIEW_REQUIRED" if isinstance(error, SourceReviewRequiredError) else "PROCESSING_FAILED",
+                diagnostic_summary=diagnostic,
+            )
+        if adapter.last_status != "complete" or adapter.completed_output_path is None:
+            return _receipt(job_id, "incomplete", deep_policy=policy_holder["deep_policy"])
+        try:
+            output = publish_canonical_output(settings, job_id, adapter.completed_output_path)
+        except CanonicalOutputConflict as error:
+            return _receipt(
+                job_id,
+                "failed",
+                deep_policy=policy_holder["deep_policy"],
+                error_classification="FINAL_PATH_CONFLICT",
+                diagnostic_summary=str(error),
+            )
+        except Exception as error:
+            return _receipt(
+                job_id,
+                "failed",
+                deep_policy=policy_holder["deep_policy"],
+                error_classification="OUTPUT_VERIFY_FAILED",
+                diagnostic_summary=str(error),
+            )
         return _receipt(
             job_id,
-            "failed",
+            "succeeded",
             deep_policy=policy_holder["deep_policy"],
-            error_classification="SOURCE_REVIEW_REQUIRED" if isinstance(error, SourceReviewRequiredError) else "PROCESSING_FAILED",
-            diagnostic_summary=diagnostic,
+            output_ref=output.path.relative_to(settings.output_dir).as_posix(),
+            output_fingerprint=output.fingerprint,
         )
-    if adapter.last_status != "complete" or adapter.completed_output_path is None:
-        return _receipt(job_id, "incomplete", deep_policy=policy_holder["deep_policy"])
-    try:
-        output = publish_canonical_output(settings, job_id, adapter.completed_output_path)
-    except CanonicalOutputConflict as error:
-        return _receipt(
-            job_id,
-            "failed",
-            deep_policy=policy_holder["deep_policy"],
-            error_classification="FINAL_PATH_CONFLICT",
-            diagnostic_summary=str(error),
-        )
-    except Exception as error:
-        return _receipt(
-            job_id,
-            "failed",
-            deep_policy=policy_holder["deep_policy"],
-            error_classification="OUTPUT_VERIFY_FAILED",
-            diagnostic_summary=str(error),
-        )
-    return _receipt(
-        job_id,
-        "succeeded",
-        deep_policy=policy_holder["deep_policy"],
-        output_ref=output.path.relative_to(settings.output_dir).as_posix(),
-        output_fingerprint=output.fingerprint,
-    )
+    finally:
+        if work_root.exists() and not work_root.is_symlink() and work_root.is_dir():
+            import shutil
+            shutil.rmtree(work_root, ignore_errors=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -544,7 +597,14 @@ def _legacy_process_job(settings, adapter: CanonicalRpcAdapter, job: dict[str, o
     process_job(settings, adapter, job, **kwargs)
 
 
-def _modern_process_job(settings, adapter: CanonicalRpcAdapter, job: dict[str, object], **kwargs: object) -> None:
+def _modern_process_job(
+    settings,
+    adapter: CanonicalRpcAdapter,
+    job: dict[str, object],
+    policy_observer: Callable[[object], None] | None = None,
+    canonical_policy_outcomes: bool = False,
+    **kwargs: object,
+) -> None:
     """Canonical child boundary for the modern chain.
 
     The stage runner is injected by the canonical/demo integration.  Keeping
@@ -557,12 +617,26 @@ def _modern_process_job(settings, adapter: CanonicalRpcAdapter, job: dict[str, o
     stages = job.get("modernStages")
     if not isinstance(stages, Mapping):
         if "modernProfile" not in job or "configJson" not in job:
-            _legacy_process_job(settings, adapter, job, **kwargs)
+            _legacy_process_job(
+                settings,
+                adapter,
+                job,
+                policy_observer=policy_observer,
+                canonical_policy_outcomes=canonical_policy_outcomes,
+                **kwargs,
+            )
             return
         stages = build_modern_stage_bundle(runtime_config=job.get("configJson") if isinstance(job.get("configJson"), Mapping) else {})
     required = ("source", "localization", "tts", "delivery", "timeline", "subtitle")
     if any(not callable(stages.get(name)) for name in required):
-        _legacy_process_job(settings, adapter, job, **kwargs)
+        _legacy_process_job(
+            settings,
+            adapter,
+            job,
+            policy_observer=policy_observer,
+            canonical_policy_outcomes=canonical_policy_outcomes,
+            **kwargs,
+        )
         return
     result = run_modern_p1c(
         Path(str(job["sourcePath"])),
@@ -583,6 +657,63 @@ def _modern_process_job(settings, adapter: CanonicalRpcAdapter, job: dict[str, o
         timeline_stage=stages["timeline"],
         subtitle_stage=stages["subtitle"],
     )
+    if callable(policy_observer):
+        policy_mode = getattr(settings, "policy_mode", None) or os.environ.get("DUBVI_POLICY_MODE", "off").strip().lower()
+        policy_eval = None
+        if isinstance(result, Mapping):
+            policy_eval = result.get("deepPolicy") or result.get("deep_policy")
+        if policy_eval is None and policy_mode in {"review", "enforce"}:
+            from content_policy import (
+                ContentPolicyConfig,
+                ContentPolicyInput,
+                PrefilterConfig,
+                evaluate_content_policy,
+            )
+            records = result.get("records") if isinstance(result, Mapping) and isinstance(result.get("records"), Sequence) else []
+            config = job.get("configJson") if isinstance(job.get("configJson"), Mapping) else {}
+            source_metadata = config.get("sourceMetadata") if isinstance(config.get("sourceMetadata"), Mapping) else {}
+            source = Path(str(job["sourcePath"]))
+            policy_transcript = " ".join(
+                str(rec.get("sourceTextZh") or rec.get("ocrTextZh") or rec.get("asrTextZh") or rec.get("text") or "")
+                for rec in records
+                if isinstance(rec, Mapping)
+            ).strip()
+            source_duration = 0.0
+            try:
+                from dubvi_worker import ffprobe_duration
+                source_duration = float(ffprobe_duration(source))
+            except Exception:
+                max_ms = 0.0
+                for rec in records:
+                    if isinstance(rec, Mapping):
+                        end = rec.get("endMs") or rec.get("sourceEndMs") or rec.get("end") or 0
+                        try:
+                            max_ms = max(max_ms, float(end))
+                        except (ValueError, TypeError):
+                            pass
+                source_duration = max_ms / 1000.0 if max_ms > 0 else float(getattr(settings, "policy_min_duration_seconds", 35.0))
+            policy_eval = evaluate_content_policy(
+                ContentPolicyInput(
+                    duration_seconds=source_duration,
+                    segments=records,
+                    transcript=policy_transcript,
+                    title=str(config.get("sourceTitle") or job.get("sourceName") or source.stem),
+                    description=str(config.get("sourceDescription") or ""),
+                    metadata=source_metadata,
+                    author=str(config.get("sourceAuthor") or ""),
+                    channel_profile=str(config.get("channelProfile") or ""),
+                ),
+                ContentPolicyConfig(
+                    prefilter=PrefilterConfig(
+                        min_duration_seconds=getattr(settings, "policy_min_duration_seconds", 35.0),
+                        min_speech_density=getattr(settings, "policy_min_speech_density", 0.60),
+                    ),
+                    enable_ai_judge=getattr(settings, "policy_enable_ai_judge", False),
+                    judge_threshold=getattr(settings, "policy_judge_threshold", 8.0),
+                    judge_api_key=getattr(settings, "gemini_api_key", None),
+                ),
+            )
+        policy_observer(policy_eval)
     output_path = result.get("outputPath") if isinstance(result, Mapping) else None
     if isinstance(output_path, str):
         adapter.report(str(job["id"]), "complete", 100, status="complete", output_path=output_path)
