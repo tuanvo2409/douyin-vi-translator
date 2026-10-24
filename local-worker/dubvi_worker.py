@@ -814,6 +814,8 @@ def preserve_source_timeline(audio_clips: list[dict[str, Any]]) -> list[tuple[in
 from dubvi_subtitle import (
     round_rect_ass,
     draw_ass,
+    generate_clean_ass_subtitles,
+    render_clean_ass,
 )
 
 
@@ -1145,7 +1147,8 @@ def process_job(
         if not visual_source.is_file():
             visual_source = source
         width, height = ffprobe_dimensions(visual_source)
-        draw_ass(reviewed_segments, width, height, config["roi"], ass_path)
+        source_h = config.get("sourceHeight") or (config.get("roi") or {}).get("sourceHeight") or height
+        draw_ass(reviewed_segments, width, height, config["roi"], ass_path, source_h=source_h)
         draw_srt(reviewed_segments, srt_path)
         output = job_dir / f"{source.stem}_vi_reviewed.mp4"
         render_video(visual_source, output, ass_path, voice_inputs, config["roi"], config["audioMode"])
@@ -1439,7 +1442,8 @@ def process_job(
 
     ass_path = job_dir / "subtitles_vi.ass"
     width, height = ffprobe_dimensions(visual_source)
-    draw_ass(segments, width, height, config["roi"], ass_path)
+    source_h = config.get("sourceHeight") or (config.get("roi") or {}).get("sourceHeight") or height
+    draw_ass(segments, width, height, config["roi"], ass_path, source_h=source_h)
     output = job_dir / f"{source.stem}_vi.mp4"
     render_video(
         visual_source, output, ass_path, voice_inputs, config["roi"], config["audioMode"],
@@ -1615,7 +1619,9 @@ def auto_detect_subtitle_roi(video_path: Path, sample_count: int = 3) -> dict[st
                 "yCenterPx": 1440,
                 "avgHeightPx": 60,
                 "boxBlurY": 1380,
-                "boxBlurH": 120
+                "boxBlurH": 120,
+                "sourceHeight": 1920,
+                "source_h": 1920,
             }
     engine = _rapidocr_engine
 
@@ -1626,7 +1632,7 @@ def auto_detect_subtitle_roi(video_path: Path, sample_count: int = 3) -> dict[st
 
     if total_frames <= 0:
         cap.release()
-        return {"has_hardsub": False, "yPercent": 75.0, "yCenterPx": int(height * 0.75), "avgHeightPx": 60, "boxBlurY": int(height * 0.75 - 60), "boxBlurH": 120}
+        return {"has_hardsub": False, "yPercent": 75.0, "yCenterPx": int(height * 0.75), "avgHeightPx": 60, "boxBlurY": int(height * 0.75 - 60), "boxBlurH": 120, "sourceHeight": height, "source_h": height}
 
     step = max(1, total_frames // (sample_count + 1))
     detected_boxes = []
@@ -1690,7 +1696,9 @@ def auto_detect_subtitle_roi(video_path: Path, sample_count: int = 3) -> dict[st
             "yCenterPx": int(height * 0.75),
             "avgHeightPx": 60,
             "boxBlurY": int(height * 0.75 - 60),
-            "boxBlurH": 120
+            "boxBlurH": 120,
+            "sourceHeight": height,
+            "source_h": height,
         }
 
     avg_y_center = sum(b["y_center"] for b in detected_boxes) / len(detected_boxes)
@@ -1707,7 +1715,9 @@ def auto_detect_subtitle_roi(video_path: Path, sample_count: int = 3) -> dict[st
         "yCenterPx": int(avg_y_center),
         "avgHeightPx": int(avg_h),
         "boxBlurY": blur_y,
-        "boxBlurH": blur_h
+        "boxBlurH": blur_h,
+        "sourceHeight": height,
+        "source_h": height,
     }
 
 
@@ -1794,6 +1804,9 @@ def attach_dynamic_subtitle_coordinates(
             best_score, best_cy, best_h = zh_boxes[0]
             seg["yCenterPx"] = best_cy
             seg["boxHeightPx"] = best_h
+            seg["yPercent"] = round((best_cy / height) * 100.0, 2)
+            seg["source_h"] = height
+            seg["sourceHeight"] = height
         else:
             seg["yCenterPx"] = None
 
@@ -1805,6 +1818,10 @@ def attach_dynamic_subtitle_coordinates(
         for s in segments:
             if s.get("yCenterPx") is None:
                 s["yCenterPx"] = median_y
+            if s.get("yPercent") is None and s.get("yCenterPx") is not None:
+                s["yPercent"] = round((s["yCenterPx"] / height) * 100.0, 2)
+            s.setdefault("source_h", height)
+            s.setdefault("sourceHeight", height)
     else:
         fallback_y = int(roi.get("yCenterPx", int(height * 0.50)))
         if fallback_y > int(height * 0.65):
@@ -1812,6 +1829,10 @@ def attach_dynamic_subtitle_coordinates(
         for s in segments:
             if s.get("yCenterPx") is None:
                 s["yCenterPx"] = fallback_y
+            if s.get("yPercent") is None and s.get("yCenterPx") is not None:
+                s["yPercent"] = round((s["yCenterPx"] / height) * 100.0, 2)
+            s.setdefault("source_h", height)
+            s.setdefault("sourceHeight", height)
 
     return segments
 

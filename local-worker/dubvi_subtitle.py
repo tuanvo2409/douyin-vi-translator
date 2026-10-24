@@ -42,7 +42,9 @@ def auto_detect_subtitle_roi(video_path: Path, sample_count: int = 8) -> dict[st
             "yCenterPx": 1440,
             "avgHeightPx": 60,
             "boxBlurY": 1380,
-            "boxBlurH": 120
+            "boxBlurH": 120,
+            "sourceHeight": 1920,
+            "source_h": 1920,
         }
 
     global _rapidocr_engine
@@ -57,7 +59,7 @@ def auto_detect_subtitle_roi(video_path: Path, sample_count: int = 8) -> dict[st
 
     if total_frames <= 0:
         cap.release()
-        return {"has_hardsub": False, "yPercent": 75.0, "yCenterPx": int(height * 0.75), "avgHeightPx": 60, "boxBlurY": int(height * 0.75 - 60), "boxBlurH": 120}
+        return {"has_hardsub": False, "yPercent": 75.0, "yCenterPx": int(height * 0.75), "avgHeightPx": 60, "boxBlurY": int(height * 0.75 - 60), "boxBlurH": 120, "sourceHeight": height, "source_h": height}
 
     step = max(1, total_frames // (sample_count + 1))
     detected_boxes = []
@@ -115,7 +117,9 @@ def auto_detect_subtitle_roi(video_path: Path, sample_count: int = 8) -> dict[st
             "yCenterPx": int(height * 0.75),
             "avgHeightPx": 60,
             "boxBlurY": int(height * 0.75 - 60),
-            "boxBlurH": 120
+            "boxBlurH": 120,
+            "sourceHeight": height,
+            "source_h": height,
         }
 
     avg_y_center = sum(b["y_center"] for b in detected_boxes) / len(detected_boxes)
@@ -132,7 +136,9 @@ def auto_detect_subtitle_roi(video_path: Path, sample_count: int = 8) -> dict[st
         "yCenterPx": int(avg_y_center),
         "avgHeightPx": int(avg_h),
         "boxBlurY": blur_y,
-        "boxBlurH": blur_h
+        "boxBlurH": blur_h,
+        "sourceHeight": height,
+        "source_h": height,
     }
 
 
@@ -262,6 +268,9 @@ def attach_dynamic_subtitle_coordinates(
             best_score, best_cy, best_h = zh_boxes[0]
             seg["yCenterPx"] = best_cy
             seg["boxHeightPx"] = best_h
+            seg["yPercent"] = round((best_cy / height) * 100.0, 2)
+            seg["source_h"] = height
+            seg["sourceHeight"] = height
         else:
             seg["yCenterPx"] = None
 
@@ -275,6 +284,10 @@ def attach_dynamic_subtitle_coordinates(
         for s in segments:
             if s.get("yCenterPx") is None:
                 s["yCenterPx"] = median_y
+            if s.get("yPercent") is None and s.get("yCenterPx") is not None:
+                s["yPercent"] = round((s["yCenterPx"] / height) * 100.0, 2)
+            s.setdefault("source_h", height)
+            s.setdefault("sourceHeight", height)
     else:
         # Fallback an toĂ n: Douyin drama luĂ´n Ä‘áº·t phá»¥ Ä‘á» á»Ÿ khoáº£ng 50% - 52% (Y â‰ˆ 960px)
         fallback_y = int(roi.get("yCenterPx", int(height * 0.50)))
@@ -283,6 +296,10 @@ def attach_dynamic_subtitle_coordinates(
         for s in segments:
             if s.get("yCenterPx") is None:
                 s["yCenterPx"] = fallback_y
+            if s.get("yPercent") is None and s.get("yCenterPx") is not None:
+                s["yPercent"] = round((s["yCenterPx"] / height) * 100.0, 2)
+            s.setdefault("source_h", height)
+            s.setdefault("sourceHeight", height)
 
     return segments
 
@@ -393,30 +410,57 @@ def format_cue_lines(words: list[str]) -> list[str]:
 
 def draw_ass(
     segments: list[dict[str, Any]],
-    video_width: int,
-    video_height: int,
-    roi: dict[str, Any],
-    path: Path,
+    video_width: int | dict[str, Any] = 1080,
+    video_height: int | Path | str = 1920,
+    roi: dict[str, Any] | None = None,
+    path: Path | str | None = None,
     font_name: str = "Arial",
     font_size: int = 44,
     font_color: str = "#111111",
     box_color: str = "white",
-    video_duration_sec: float | None = None
+    video_duration_sec: float | None = None,
+    source_h: int | None = None,
 ) -> None:
     """Vẽ phụ đề ASS Thẻ Bo Góc Đơn Tinh Gọn (Sleek Compact Pill) tự động khớp theo tọa độ OCR và nhận diện kênh."""
-    if video_height >= video_width:
+    if isinstance(video_width, dict):
+        actual_roi = video_width
+        actual_path = Path(video_height)
+        actual_vw = 1080
+        actual_vh = 1920
+    else:
+        actual_roi = roi or {}
+        actual_path = Path(path) if path is not None else Path("subtitles.ass")
+        actual_vw = int(video_width)
+        actual_vh = int(video_height)
+
+    if actual_vh >= actual_vw:
         target_w, target_h = 1080, 1920
     else:
         target_w, target_h = 1920, 1080
+
+    resolved_source_h = source_h
+    if resolved_source_h is None and actual_roi:
+        resolved_source_h = actual_roi.get("source_h") or actual_roi.get("sourceHeight")
+    if resolved_source_h is None and actual_vh > 0:
+        resolved_source_h = actual_vh
+
+    is_scaled = (
+        resolved_source_h is not None
+        and resolved_source_h > 0
+        and resolved_source_h != target_h
+    )
 
     center_x = target_w // 2
     actual_font_size = font_size if font_size else 44
 
     # Tính tâm Y theo kết quả OCR tự động quét được
-    if roi and "yPercent" in roi:
-        center_y = int(target_h * roi.get("yPercent", 75.0) / 100.0)
-    elif roi and "yCenterPx" in roi:
-        center_y = int(roi["yCenterPx"])
+    if actual_roi and "yPercent" in actual_roi and actual_roi["yPercent"] is not None:
+        center_y = int(target_h * float(actual_roi["yPercent"]) / 100.0)
+    elif actual_roi and "yCenterPx" in actual_roi and actual_roi["yCenterPx"] is not None:
+        if is_scaled:
+            center_y = int(round(float(actual_roi["yCenterPx"]) * (target_h / float(resolved_source_h))))
+        else:
+            center_y = int(actual_roi["yCenterPx"])
     else:
         center_y = int(target_h * 0.75)
 
@@ -450,11 +494,27 @@ def draw_ass(
 
     valid_segments = [s for s in segments if s.get("translatedTextVi", "").strip()]
     if not valid_segments:
-        path.write_text("\n".join(lines), encoding="utf-8")
+        actual_path.parent.mkdir(parents=True, exist_ok=True)
+        actual_path.write_text("\n".join(lines), encoding="utf-8")
         return
 
     # 1. Tính toán tọa độ Y chuẩn và kích thước thanh mask cố định rộng rãi (Gọn gàng, không bao giờ tràn sub)
-    detected_ys = [int(s.get("yCenterPx")) for s in valid_segments if s.get("yCenterPx")]
+    detected_ys: list[int] = []
+    for s in valid_segments:
+        if is_scaled:
+            if s.get("yPercent") is not None:
+                scale_y = int(round(target_h * float(s["yPercent"]) / 100.0))
+                detected_ys.append(scale_y)
+            elif s.get("yCenterPx") is not None:
+                scale_y = int(round(float(s["yCenterPx"]) * (target_h / float(resolved_source_h))))
+                detected_ys.append(scale_y)
+        else:
+            if s.get("yPercent") is not None and s.get("yCenterPx") is None:
+                scale_y = int(round(target_h * float(s["yPercent"]) / 100.0))
+                detected_ys.append(scale_y)
+            elif s.get("yCenterPx") is not None:
+                detected_ys.append(int(s["yCenterPx"]))
+
     common_cy = int(sorted(detected_ys)[len(detected_ys) // 2]) if detected_ys else center_y
     common_h = 160  # 160px: Ôm khít 1-2 dòng chữ 44px với padding trên/dưới thoáng đãng
     common_w = 920  # 920px: Chừa lề an toàn 80px mỗi bên màn hình 1080px (chuẩn mobile safe-zone)
@@ -515,4 +575,9 @@ def draw_ass(
             lines.append(f"Dialogue: 1,{st_str},{et_str},CleanText,,0,0,0,,{{\\an5\\pos({center_x},{common_cy})}}{clean_text}")
             curr_st = c_et
 
-    path.write_text("\n".join(lines), encoding="utf-8")
+    actual_path.parent.mkdir(parents=True, exist_ok=True)
+    actual_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+generate_clean_ass_subtitles = draw_ass
+render_clean_ass = draw_ass
