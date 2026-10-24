@@ -844,6 +844,34 @@ def ffprobe_has_audio(source: Path) -> bool:
         return False
 
 
+_FAST_ENCODER_FLAGS_CACHE = None
+
+def get_fast_video_encoder_flags() -> list[str]:
+    """Resolve high-performance video encoder flags for Stage 2 render.
+    Prefers Intel QuickSync (h264_qsv) if available, falls back to libx264 ultrafast.
+    """
+    global _FAST_ENCODER_FLAGS_CACHE
+    forced = os.getenv("DUBVI_FORCE_ENCODER", "").strip().lower()
+    if forced == "h264_qsv":
+        return ["-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "23"]
+    if forced == "libx264":
+        return ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast", "-threads", "0", "-crf", "20"]
+
+    if _FAST_ENCODER_FLAGS_CACHE is not None:
+        return list(_FAST_ENCODER_FLAGS_CACHE)
+
+    try:
+        probe = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True, check=True)
+        if "h264_qsv" in probe.stdout:
+            _FAST_ENCODER_FLAGS_CACHE = ["-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "23"]
+            return list(_FAST_ENCODER_FLAGS_CACHE)
+    except Exception:
+        pass
+
+    _FAST_ENCODER_FLAGS_CACHE = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast", "-threads", "0", "-crf", "20"]
+    return list(_FAST_ENCODER_FLAGS_CACHE)
+
+
 def render_video(
     source: Path,
     output: Path,
@@ -856,6 +884,11 @@ def render_video(
     logo_position: str = "left",
     orig_audio_source: Path | None = None,
     max_duration_s: float | None = None,
+    ghost_overlay_path: Path | None = None,
+    ghost_opacity: float = 0.025,
+    enable_hflip: bool = False,
+    enable_zoom: bool = False,
+    zoom_factor: float = 1.03,
     **kwargs: Any
 ) -> None:
     """Render video Master 1080p với Thẻ Bo Góc Đơn Tinh Gọn, Logo Kênh động và hòa âm LUFS -14dB."""
@@ -863,9 +896,18 @@ def render_video(
     
     # Chuẩn hóa độ phân giải xuất ra Full HD 1080p (Chuẩn TikTok/Reels/Shorts)
     if orig_h >= orig_w:
-        scale_filter = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
+        target_w, target_h = 1080, 1920
     else:
-        scale_filter = "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080"
+        target_w, target_h = 1920, 1080
+
+    v_pre: list[str] = []
+    if enable_zoom and zoom_factor > 1.0:
+        v_pre.append(f"crop=in_w/{zoom_factor:.2f}:in_h/{zoom_factor:.2f}")
+    if enable_hflip:
+        v_pre.append("hflip")
+    v_pre.append(f"scale={target_w}:{target_h}:force_original_aspect_ratio=increase,crop={target_w}:{target_h}")
+
+    scale_filter = ",".join(v_pre)
 
     ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
     video_filter = f"[0:v]{scale_filter},ass='{ass_escaped}'[v_sub]"
@@ -896,16 +938,26 @@ def render_video(
         idx_name = index - curr_offset + 1
         audio_labels.append(f"[{index}:a]adelay={offset_ms}|{offset_ms}[v{idx_name}]")
 
-    # Xử lý chèn Logo Avatar Kênh động
-    has_logo = logo_badge_path and Path(logo_badge_path).exists()
-    if has_logo:
-        logo_idx = curr_offset + len(audio_segments)
-        command.extend(["-i", str(logo_badge_path)])
-        if logo_position == "right":
-            video_filter += f";[v_sub][{logo_idx}:v]overlay=x=main_w-overlay_w-45:y=95:format=auto[video]"
-        else:
-            video_filter += f";[v_sub][{logo_idx}:v]overlay=x=45:y=95:format=auto[video]"
+    # Xử lý chèn Lớp phủ bóng ma (Ghost Overlay) chống bản quyền thuật toán (2.5% opacity + gblur)
+    has_ghost = bool(ghost_overlay_path and Path(ghost_overlay_path).exists())
+    has_logo = bool(logo_badge_path and Path(logo_badge_path).exists())
+
+    if has_ghost:
+        ghost_idx = curr_offset + len(audio_segments)
+        command.extend(["-i", str(ghost_overlay_path)])
+        ghost_out = "[v_ghost]" if has_logo else "[video]"
+        video_filter += f";[{ghost_idx}:v]scale={target_w}:{target_h},gblur=sigma=2,format=rgba,colorchannelmixer=aa={ghost_opacity}[ghost_layer];[v_sub][ghost_layer]overlay=0:0{ghost_out}"
+        base_v = "[v_ghost]"
     else:
+        base_v = "[v_sub]"
+
+    # Xử lý chèn Logo Avatar Kênh động
+    if has_logo:
+        logo_idx = curr_offset + len(audio_segments) + (1 if has_ghost else 0)
+        command.extend(["-i", str(logo_badge_path)])
+        pos_str = "x=main_w-overlay_w-45:y=95" if logo_position == "right" else "x=45:y=95"
+        video_filter += f";{base_v}[{logo_idx}:v]overlay={pos_str}:format=auto[video]"
+    elif not has_ghost:
         video_filter = video_filter.replace("[v_sub]", "[video]")
 
     filters = [video_filter]
@@ -942,10 +994,11 @@ def render_video(
     else:
         filters.append("[finalaudio_pre]anull[finalaudio]")
 
+    v_flags = get_fast_video_encoder_flags()
     command.extend([
         "-filter_complex", ";".join(filters),
         "-map", "[video]", "-map", "[finalaudio]",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-threads", "2", "-crf", "20",
+        *v_flags,
         "-c:a", "aac"
     ])
     effective_duration = float(effective_max_duration or ffprobe_duration(source))
@@ -1536,7 +1589,7 @@ def aggregate_whisper_segments(
 _rapidocr_engine = None
 
 
-def auto_detect_subtitle_roi(video_path: Path, sample_count: int = 8) -> dict[str, Any]:
+def auto_detect_subtitle_roi(video_path: Path, sample_count: int = 3) -> dict[str, Any]:
     """Quét tự động vị trí Y và kích thước chữ phụ đề gốc tiếng Trung."""
     try:
         import cv2
@@ -1622,6 +1675,11 @@ def auto_detect_subtitle_roi(video_path: Path, sample_count: int = 8) -> dict[st
                     "y_percent": (box_y + box_h / 2.0) / height * 100.0,
                     "score": score
                 })
+
+        # Early exit: nếu đã phát hiện >= 2 mẫu nhất quán (lệch < 3%), dừng quét để tiết kiệm thời gian
+        if len(detected_boxes) >= 2:
+            if abs(detected_boxes[-2]["y_percent"] - detected_boxes[-1]["y_percent"]) <= 3.0:
+                break
 
     cap.release()
 
