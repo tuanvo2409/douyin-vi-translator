@@ -138,7 +138,7 @@ def process_single_video(item: dict, settings: Settings) -> bool:
             slot_ms = max(800, seg.get("endMs", 0) - seg.get("startMs", 0))
             vi_text = (seg.get("translatedTextVi") or "...").strip()
             synthesize(vi_text, default_voice, raw_v, settings)
-            fit_ms, _ = fit_voice(raw_v, fit_v, slot_ms, max_tempo=1.35)
+            fit_ms, _ = fit_voice(raw_v, fit_v, slot_ms, max_tempo=1.12)
             raw_clips.append({
                 "segment": seg,
                 "fitted_voice": fit_v,

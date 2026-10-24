@@ -1,0 +1,64 @@
+{
+  "durationMs": 25300,
+  "segments": [
+    {"position": 0, "startMs": 0, "endMs": 1420, "asrTextZh": "信心修攢了重金", "ocrTextZh": "新字期", "needsReview": false},
+    {"position": 1, "startMs": 1420, "endMs": 2080, "asrTextZh": "買了金屬吧", "ocrTextZh": "福", "needsReview": false},
+    {"position": 2, "startMs": 2080, "endMs": 2640, "asrTextZh": "這什麼可可", "ocrTextZh": "", "needsReview": true},
+    {"position": 3, "startMs": 2640, "endMs": 4100, "asrTextZh": "婆婆你不是到我直接職業啊", "ocrTextZh": "你物知道", "needsReview": false},
+    {"position": 4, "startMs": 4100, "endMs": 5500, "asrTextZh": "怎麼還往外翻菜垃圾呀", "ocrTextZh": "带垃圾啊", "needsReview": false},
+    {"position": 5, "startMs": 6360, "endMs": 7820, "asrTextZh": "你們快撤就垃圾", "ocrTextZh": "2", "needsReview": false},
+    {"position": 6, "startMs": 7820, "endMs": 9040, "asrTextZh": "本公司說把你聽到了", "ocrTextZh": "139", "needsReview": false},
+    {"position": 7, "startMs": 9040, "endMs": 9940, "asrTextZh": "聽到了聽到了", "ocrTextZh": "听到e", "needsReview": false},
+    {"position": 8, "startMs": 9940, "endMs": 11620, "asrTextZh": "老都終身給你職業", "ocrTextZh": "17", "needsReview": false},
+    {"position": 9, "startMs": 11620, "endMs": 12940, "asrTextZh": "姊妹你幫個忙", "ocrTextZh": "你帮个忙", "needsReview": false},
+    {"position": 10, "startMs": 12940, "endMs": 14300, "asrTextZh": "這塊上的老秦來了", "ocrTextZh": "你都个忙", "needsReview": false},
+    {"position": 11, "startMs": 14300, "endMs": 15280, "asrTextZh": "小主別哭", "ocrTextZh": "20", "needsReview": false},
+    {"position": 12, "startMs": 15280, "endMs": 16300, "asrTextZh": "你在職業我也包了", "ocrTextZh": "75", "needsReview": false},
+    {"position": 13, "startMs": 16300, "endMs": 16680, "asrTextZh": "無心", "ocrTextZh": "2", "needsReview": true},
+    {"position": 14, "startMs": 16680, "endMs": 17400, "asrTextZh": "本公開信口", "ocrTextZh": "", "needsReview": true},
+    {"position": 15, "startMs": 17400, "endMs": 18320, "asrTextZh": "趁機太差了", "ocrTextZh": "成绩太差了", "needsReview": false},
+    {"position": 16, "startMs": 18320, "endMs": 19240, "asrTextZh": "你模仿我家長", "ocrTextZh": "成绩太差了", "needsReview": false},
+    {"position": 17, "startMs": 19240, "endMs": 20100, "asrTextZh": "幫我親生命而賣", "ocrTextZh": "", "needsReview": false},
+    {"position": 18, "startMs": 20100, "endMs": 21940, "asrTextZh": "這事你增富老奴醫生就行了", "ocrTextZh": "这事儿", "needsReview": false},
+    {"position": 19, "startMs": 21940, "endMs": 22540, "asrTextZh": "你哭什麼", "ocrTextZh": "", "needsReview": true},
+    {"position": 20, "startMs": 22540, "endMs": 23240, "asrTextZh": "你不懂", "ocrTextZh": "M", "needsReview": true},
+    {"position": 21, "startMs": 23240, "endMs": 24020, "asrTextZh": "不不不不不", "ocrTextZh": "", "needsReview": false},
+    {"position": 22, "startMs": 24020, "endMs": 24220, "asrTextZh": "不不不不不", "ocrTextZh": "我阿玛签子", "needsReview": true},
+    {"position": 23, "startMs": 24080, "endMs": 24380, "asrTextZh": "不不不不", "ocrTextZh": "我阿玛签子", "needsReview": true}
+  ],
+  "avChunks": [
+    {"items": [
+      {"startSec": 0.0, "endSec": 0.5, "spokenZh": null, "subtitleZh": "当你穿进老钱班", "confidence": "high"},
+      {"startSec": 0.5, "endSec": 1.5, "spokenZh": "新学期", "subtitleZh": "新学期", "confidence": "high"},
+      {"startSec": 1.5, "endSec": 2.5, "spokenZh": "我攒了重金买了新书包", "subtitleZh": "我攒了重金买了新书包", "confidence": "high"},
+      {"startSec": 2.5, "endSec": 3.5, "spokenZh": "这书包可贵", "subtitleZh": "这书包可贵", "confidence": "high"},
+      {"startSec": 3.5, "endSec": 4.5, "spokenZh": "你不知道我今天值日啊", "subtitleZh": "你不知道我今天值日啊", "confidence": "high"},
+      {"startSec": 4.5, "endSec": 5.5, "spokenZh": "怎么还往班里带垃圾啊", "subtitleZh": "怎么还往班里带垃圾啊", "confidence": "high"},
+      {"startSec": 5.5, "endSec": 6.5, "spokenZh": null, "subtitleZh": "垃圾桶", "confidence": "high"},
+      {"startSec": 6.5, "endSec": 7.5, "spokenZh": "你们管这叫垃圾", "subtitleZh": "你们管这叫垃圾？", "confidence": "high"},
+      {"startSec": 7.5, "endSec": 8.5, "spokenZh": "本公主说话", "subtitleZh": "本公主说话", "confidence": "high"}
+    ]},
+    {"items": [
+      {"startSec": 0.0, "endSec": 0.5, "spokenZh": null, "subtitleZh": "当你穿进老钱班", "confidence": "high"},
+      {"startSec": 0.5, "endSec": 1.0, "spokenZh": "本公主说话", "subtitleZh": "本公主说话", "confidence": "high"},
+      {"startSec": 1.0, "endSec": 1.5, "spokenZh": "你听到了", "subtitleZh": "你听到了", "confidence": "high"},
+      {"startSec": 1.5, "endSec": 2.0, "spokenZh": "听到了", "subtitleZh": "听到了", "confidence": "high"},
+      {"startSec": 2.0, "endSec": 3.5, "spokenZh": "听到了，老奴终身给你值日", "subtitleZh": "老奴终身给您值日", "confidence": "high"},
+      {"startSec": 3.5, "endSec": 4.5, "spokenZh": null, "subtitleZh": "格格", "confidence": "high"},
+      {"startSec": 4.5, "endSec": 5.5, "spokenZh": "你帮个忙", "subtitleZh": "你帮个忙", "confidence": "high"},
+      {"startSec": 5.5, "endSec": 6.5, "spokenZh": "最夸张的老钱来了", "subtitleZh": "最夸张的老钱来了", "confidence": "high"},
+      {"startSec": 6.5, "endSec": 7.5, "spokenZh": "小主别哭", "subtitleZh": "小主别哭", "confidence": "high"},
+      {"startSec": 7.5, "endSec": 8.0, "spokenZh": "你的值日我也包了", "subtitleZh": "你的值日我也包了", "confidence": "high"},
+      {"startSec": 8.0, "endSec": 8.5, "spokenZh": "不是", "subtitleZh": "不是", "confidence": "high"}
+    ]},
+    {"items": [
+      {"startSec": 0.0, "endSec": 0.9, "spokenZh": "本宫开学考", "subtitleZh": "本宫开学考", "confidence": "high"},
+      {"startSec": 0.9, "endSec": 1.8, "spokenZh": "成绩太差了", "subtitleZh": "成绩太差了", "confidence": "high"},
+      {"startSec": 1.8, "endSec": 3.8, "spokenZh": "你模仿我家长帮我签个名呗", "subtitleZh": "你模仿我家长帮我签个名呗", "confidence": "high"},
+      {"startSec": 4.2, "endSec": 5.0, "spokenZh": "你呀老奴一声就行", "subtitleZh": "你呀老奴一声就行", "confidence": "high"},
+      {"startSec": 5.2, "endSec": 5.8, "spokenZh": "你哭啥", "subtitleZh": "你哭啥", "confidence": "high"},
+      {"startSec": 6.0, "endSec": 6.8, "spokenZh": "你不懂", "subtitleZh": "你不懂!", "confidence": "high"},
+      {"startSec": 7.0, "endSec": 8.8, "spokenZh": "我模仿被我阿玛签了", "subtitleZh": "我模仿被我阿玛签了", "confidence": "high"}
+    ]}
+  ]
+}

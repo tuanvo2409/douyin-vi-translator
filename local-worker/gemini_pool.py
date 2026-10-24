@@ -12,7 +12,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("dubvi.gemini_pool")
 
@@ -97,18 +97,17 @@ class GeminiKeyPool:
                 self.current_idx = (idx + 1) % n
                 return candidate
 
-        earliest_key = min(self.keys, key=lambda k: self.cooldowns.get(k, 0))
-        return earliest_key
+        return None
 
     def report_error(self, key: str, status_code: int = 429) -> None:
         if not key:
             return
         if status_code == 429:
             self.cooldowns[key] = time.time() + 60.0
-            logger.warning(f"🔑 Key '...{key[-6:]}' bị 429 Rate Limit. Đưa vào cooldown 60s.")
+            logger.warning("🔑 Gemini key bị 429 Rate Limit. Đưa vào cooldown 60s.")
         elif status_code in (400, 403):
             self.cooldowns[key] = time.time() + 3600.0
-            logger.warning(f"🔑 Key '...{key[-6:]}' lỗi {status_code}. Đưa vào cooldown 1h.")
+            logger.warning(f"🔑 Gemini key lỗi HTTP {status_code}. Đưa vào cooldown 1h.")
 
     def get_stats(self) -> Dict[str, Any]:
         now = time.time()
@@ -118,14 +117,6 @@ class GeminiKeyPool:
             "total": len(self.keys),
             "active": active,
             "cooling": cooling,
-            "keys": [
-                {
-                    "masked": f"...{k[-6:]}" if len(k) > 6 else k,
-                    "is_ready": self.cooldowns.get(k, 0) <= now,
-                    "cooldown_remaining": max(0, int(self.cooldowns.get(k, 0) - now)),
-                }
-                for k in self.keys
-            ],
         }
 
 

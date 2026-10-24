@@ -6,6 +6,172 @@ from pathlib import Path
 from rapidocr_onnxruntime import RapidOCR
 
 _OCR_INSTANCE = None
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def contains_cjk_text(text: object) -> bool:
+    """Return whether untrusted OCR text contains a Han character."""
+    return isinstance(text, str) and bool(_CJK_RE.search(text))
+
+
+def _clamp_bbox(bbox: tuple[int, int, int, int], frame_size: tuple[int, int]) -> tuple[int, int, int, int]:
+    width, height = frame_size
+    x1, y1, x2, y2 = bbox
+    return (
+        max(0, min(width, int(x1))), max(0, min(height, int(y1))),
+        max(0, min(width, int(x2))), max(0, min(height, int(y2))),
+    )
+
+
+def map_ocr_quad_to_source(
+    quad: list[list[float]] | tuple[tuple[float, float], ...],
+    crop_origin: tuple[int, int],
+    enlargement: float,
+    frame_size: tuple[int, int],
+) -> tuple[tuple[int, int], ...]:
+    """Map a quadrilateral from an enlarged OCR crop back to source pixels."""
+    if enlargement <= 0 or len(quad) != 4:
+        raise ValueError("OCR quadrilateral and enlargement are required")
+    origin_x, origin_y = crop_origin
+    width, height = frame_size
+    mapped = []
+    for point in quad:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError("invalid OCR quadrilateral")
+        x = max(0, min(width, int(round(float(point[0]) / enlargement + origin_x))))
+        y = max(0, min(height, int(round(float(point[1]) / enlargement + origin_y))))
+        mapped.append((x, y))
+    return tuple(mapped)
+
+
+def _bbox_from_quad(quad: tuple[tuple[int, int], ...]) -> tuple[int, int, int, int]:
+    return min(x for x, _ in quad), min(y for _, y in quad), max(x for x, _ in quad), max(y for _, y in quad)
+
+
+def dilate_region(bbox: tuple[int, int, int, int], frame_size: tuple[int, int]) -> tuple[int, int, int, int]:
+    """Expand a detected subtitle region proportionally without leaving the frame."""
+    x1, y1, x2, y2 = _clamp_bbox(bbox, frame_size)
+    height = max(1, y2 - y1)
+    horizontal = max(4, int(round(height * 0.15)))
+    vertical = max(5, int(round(height * 0.25)))
+    return _clamp_bbox((x1 - horizontal, y1 - vertical, x2 + horizontal, y2 + vertical), frame_size)
+
+
+def group_cjk_regions(detections: list[dict], frame_size: tuple[int, int]) -> list[dict]:
+    """Combine neighboring CJK OCR boxes into small subtitle masks, never a broad band."""
+    eligible = []
+    for detection in detections:
+        bbox = detection.get("bbox") if isinstance(detection, dict) else None
+        if not contains_cjk_text(detection.get("text")) or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            continue
+        clamped = _clamp_bbox(tuple(int(value) for value in bbox), frame_size)
+        if clamped[2] > clamped[0] and clamped[3] > clamped[1]:
+            eligible.append({**detection, "bbox": clamped})
+    eligible.sort(key=lambda item: (item["bbox"][1], item["bbox"][0]))
+    groups: list[dict] = []
+    for detection in eligible:
+        x1, y1, x2, y2 = detection["bbox"]
+        merged = None
+        for group in groups:
+            gx1, gy1, gx2, gy2 = group["bbox"]
+            line_height = max(y2 - y1, gy2 - gy1)
+            same_line = min(y2, gy2) > max(y1, gy1) and x1 - gx2 <= max(20, int(line_height * 5.5))
+            stacked_lines = min(x2, gx2) > max(x1, gx1) and y1 - gy2 <= max(12, int(line_height * 1.5))
+            if same_line or stacked_lines:
+                merged = group
+                group["bbox"] = _clamp_bbox((min(x1, gx1), min(y1, gy1), max(x2, gx2), max(y2, gy2)), frame_size)
+                group["detections"].append(detection)
+                break
+        if merged is None:
+            groups.append({"bbox": (x1, y1, x2, y2), "detections": [detection]})
+    return groups
+
+
+class TemporalCJKTracker:
+    """Keep short OCR misses stable while prohibiting cross-scene mask reuse."""
+
+    def __init__(self, hold_ms: int, frame_size: tuple[int, int]) -> None:
+        self.hold_ms = max(0, int(hold_ms))
+        self.frame_size = frame_size
+        self._tracks: list[dict] = []
+
+    def observe(self, timestamp_ms: int, regions: list[tuple[int, int, int, int]], scene_id: int) -> None:
+        self._tracks = [track for track in self._tracks if track["scene_id"] == scene_id]
+        for region in regions:
+            clamped = _clamp_bbox(region, self.frame_size)
+            matched = next((track for track in self._tracks if _overlaps(track["bbox"], clamped)), None)
+            if matched is None:
+                self._tracks.append({"bbox": clamped, "scene_id": scene_id, "last_seen_ms": int(timestamp_ms)})
+            else:
+                matched["bbox"] = clamped
+                matched["last_seen_ms"] = int(timestamp_ms)
+
+    def active_regions(self, timestamp_ms: int, scene_id: int) -> list[tuple[int, int, int, int]]:
+        return [
+            track["bbox"] for track in self._tracks
+            if track["scene_id"] == scene_id and int(timestamp_ms) - track["last_seen_ms"] <= self.hold_ms
+        ]
+
+
+def _overlaps(left: tuple[int, int, int, int], right: tuple[int, int, int, int]) -> bool:
+    return min(left[2], right[2]) > max(left[0], right[0]) and min(left[3], right[3]) > max(left[1], right[1])
+
+
+def discover_cjk_regions(samples: list[dict], frame_size: tuple[int, int]) -> list[dict]:
+    """Normalize sparse whole-frame OCR records without assuming a bottom band."""
+    discoveries: list[dict] = []
+    for sample in samples:
+        timestamp = sample.get("timestampMs") if isinstance(sample, dict) else None
+        items = sample.get("items") if isinstance(sample, dict) else None
+        if not isinstance(timestamp, int) or not isinstance(items, list):
+            continue
+        for group in group_cjk_regions(items, frame_size):
+            confidences = [
+                float(item["confidence"])
+                for item in group["detections"]
+                if isinstance(item.get("confidence"), (int, float))
+                and not isinstance(item.get("confidence"), bool)
+            ]
+            discoveries.append({
+                "timestampMs": timestamp, "bbox": group["bbox"],
+                "text": "".join(str(item.get("text") or "") for item in group["detections"]),
+                "category": "UNKNOWN",
+                **({"confidence": min(confidences)} if len(confidences) == len(group["detections"]) else {}),
+            })
+    return sorted(discoveries, key=lambda item: (item["timestampMs"], item["bbox"][1], item["bbox"][0]))
+
+
+def sparse_whole_frame_discovery(video_path: Path, sample_count: int = 8) -> list[dict]:
+    """Use a bounded number of downscaled full-frame OCR samples to find non-ROI CJK."""
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        return []
+    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+    width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    samples: list[dict] = []
+    try:
+        for index in range(max(1, min(12, sample_count))):
+            frame_index = int((frame_count - 1) * index / max(1, min(12, sample_count) - 1))
+            capture.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_index))
+            ok, frame = capture.read()
+            if not ok:
+                continue
+            scale = min(1.0, 960.0 / max(1, frame.shape[1]))
+            scanned = cv2.resize(frame, None, fx=scale, fy=scale) if scale < 1.0 else frame
+            response, _ = get_ocr_instance()(scanned)
+            items = []
+            for item in response or []:
+                if len(item) >= 3 and float(item[2]) >= 0.45 and contains_cjk_text(item[1]):
+                    quad = map_ocr_quad_to_source(item[0], (0, 0), scale, (width, height))
+                    items.append({
+                        "text": str(item[1]), "bbox": _bbox_from_quad(quad),
+                        "confidence": float(item[2]), "category": "UNKNOWN",
+                    })
+            samples.append({"timestampMs": int(frame_index * 1000 / fps), "items": items})
+    finally:
+        capture.release()
+    return discover_cjk_regions(samples, (width, height))
 
 def get_ocr_instance():
     global _OCR_INSTANCE

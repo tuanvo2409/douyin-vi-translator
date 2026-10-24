@@ -32,11 +32,11 @@ def _checked_json_response(resp: Any, label: str) -> Dict[str, Any]:
         data = resp.json()
     except Exception as exc:
         raise CapCutAPIError(
-            f"{label} returned non-JSON HTTP {resp.status_code}: {resp.text[:500]}",
+            f"{label} returned non-JSON HTTP {resp.status_code}",
             status_code=resp.status_code,
         ) from exc
     if resp.status_code >= 400:
-        raise CapCutAPIError(f"{label} HTTP {resp.status_code}: {data}", status_code=resp.status_code, response_data=data)
+        raise CapCutAPIError(f"{label} HTTP {resp.status_code}", status_code=resp.status_code)
     return data
 
 
@@ -138,7 +138,7 @@ class VODUploader:
         creds = sign_data.get("data") or {}
         for key in ("domain", "access_key_id", "secret_access_key", "session_token", "space_name"):
             if not creds.get(key):
-                raise CapCutUploadError(f"upload_sign missing required field '{key}': {sign_data}")
+                raise CapCutUploadError(f"upload_sign missing required field '{key}'")
 
         # 2. Apply Upload Inner
         apply_url = f"https://{creds['domain']}/top/v1?" + urlencode(

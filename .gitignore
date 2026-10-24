@@ -140,6 +140,7 @@ __pycache__/
 # Dubvi output & local worker runs
 output/
 dubvi-output/
+models/
 local-worker/output/
 local-worker/temp/
 local-worker/debug_ocr/

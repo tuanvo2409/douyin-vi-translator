@@ -72,7 +72,7 @@ Mở file \.env\ và cập nhật các thông số:
 GEMINI_API_KEY=AIzaSy...
 
 # Thư mục chứa video Douyin tải về máy
-DUBVI_MEDIA_DIR=C:/Users/vmath/Videos/douyin
+DUBVI_MEDIA_DIR=<absolute path to douyin-media>
 
 # Giọng đọc mặc định (BV421_vivn_streaming: Mai CapCut, BV007_streaming: Minh Quang)
 DUBVI_TTS_PROVIDER=capcut
@@ -134,7 +134,7 @@ douyin-vi-translator/
 
 ## 🔒 Bảo Mật & Quyền Riêng Tư
 
-- **100% Video & Audio lưu trữ cục bộ**: Mọi file video gốc, file nhạc nền WAV, giọng đọc MP3 và video Master 1080p đều được lưu trực tiếp trên ổ cứng máy bạn (\C:\Users\<user>\Videos\douyin\dubvi-output\\).
+- **100% Video & Audio lưu trữ cục bộ**: Mọi file video gốc, file nhạc nền WAV, giọng đọc MP3 và video Master 1080p đều được lưu trong `DUBVI_MEDIA_DIR` và `DUBVI_OUTPUT_DIR` đã cấu hình.
 - **Không bao giờ tải video lên Cloud**: Chỉ có các đoạn văn bản ngắn được gửi tới Gemini API để dịch thuật, bảo đảm tốc độ tối đa và tuyệt đối an toàn dữ liệu.
 
 ---
